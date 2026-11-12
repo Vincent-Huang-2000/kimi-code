@@ -28,6 +28,7 @@ import { IAgentToolRegistryService } from '#/agent/toolRegistry/toolRegistry';
 import { IAgentLifecycleService } from '#/session/agentLifecycle/agentLifecycle';
 import { ISessionSubagentService } from '#/session/subagent/subagent';
 import { ISessionMetadata } from '#/session/sessionMetadata/sessionMetadata';
+import { IAgentTitlePromptSource } from '#/session/sessionTitle/agentTitlePromptSource';
 import { interactions } from '#/human/interaction/facade';
 import { createTestAgent, appService, homeDirServices, llmGenerateServices, permissionModeServices, requesterFromGenerateFn,
   type TestAgentContext, type TestAgentServiceOverride } from '../../harness';
@@ -97,6 +98,8 @@ describe('Intent runtime', () => {
     await intent.command('Keep the API stable.');
     await loop.settled();
     expect((await context.get(ISessionMetadata).read()).lastPrompt).toBe('/deep Keep the API stable.');
+    await expect(context.get(IAgentTitlePromptSource).firstTurnExcerpt()).resolves.toEqual({
+      user: 'Keep the API stable.', assistant: 'Investigation incomplete.' });
   });
 
   it('requires a task and refuses unknown command options', async () => {

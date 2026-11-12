@@ -198,6 +198,18 @@ describe('AgentTitlePromptSource', () => {
     });
   });
 
+  it('uses a /deep request as a title prompt but not a deep continuation', async () => {
+    liveMessages = [
+      userMessage('deep', '保持 API 稳定', { kind: 'system_trigger', name: 'deep_request' }),
+      assistantMessage('a1', [{ type: 'text', text: '分析完成' }]),
+      userMessage('continue', 'Continue the current task with one-shot deep analysis.', { kind: 'system_trigger', name: 'deep_continue' }),
+      assistantMessage('a2', [{ type: 'text', text: '继续分析' }]),
+    ];
+    const source = ix.get(IAgentTitlePromptSource);
+    await expect(source.firstUserPrompts(3)).resolves.toEqual(['保持 API 稳定']);
+    await expect(source.firstTurnExcerpt()).resolves.toEqual({ user: '保持 API 稳定', assistant: '继续分析' });
+  });
+
   it('firstTurnExcerpt reports a missing assistant reply until the turn ends', async () => {
     liveMessages = [userMessage('u1', '刚发的问题')];
 

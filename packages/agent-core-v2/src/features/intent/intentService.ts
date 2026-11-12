@@ -5,7 +5,7 @@ import { toDisposable } from '#/_base/di/lifecycle';
 import { IAgentLoopService } from '#/agent/loop/loop';
 import { CommandOutput } from '#/agent/command/commandEvents';
 import { userInputText } from '#/agent/loop/history';
-import type { ContextMessage } from '#/agent/contextMemory/types';
+import type { ContextMessage, PromptOrigin } from '#/agent/contextMemory/types';
 import { IAgentScopeContext } from '#/agent/scopeContext/scopeContext';
 import { IAgentToolExecutorService } from '#/agent/toolExecutor/toolExecutor';
 import { IAgentToolRegistryService } from '#/agent/toolRegistry/toolRegistry';
@@ -32,6 +32,9 @@ import { IntentCommitted } from './intentOps';
 import { applyIntentUpdate, fingerprint, intentAllowsEffects, intentProjection, INTENT_READ_TOOLS } from './intentPolicy';
 import { createIntentTask, emptyIntentState, IntentBudgetSchema, IntentError, IntentStateSchema,
   type IntentState, type IntentSource, type IntentUpdate, type IntentUsage } from './intentState';
+
+const DEEP_REQUEST_ORIGIN: PromptOrigin = { kind: 'system_trigger', name: 'deep_request' };
+const DEEP_CONTINUE_ORIGIN: PromptOrigin = { kind: 'system_trigger', name: 'deep_continue' };
 
 export interface IIntentService {
   readonly _serviceBrand: undefined;
@@ -601,10 +604,11 @@ export class AgentIntentService extends Service implements IIntentService {
     this.interruptedRun = undefined;
     this.budgetStopped = false;
     this.show('Deep analysis started. Findings remain available in the current task.');
+    const request = input.length > 0 && !continuing;
     const entry = this.loop.submit({ message: { role: 'user', content: [{ type: 'text', text:
-      input.length > 0 && !continuing ? input : 'Continue the current task with one-shot deep analysis.' }] },
-      meta: { origin: { kind: 'system_trigger' } } });
-    if (input.length > 0 && !continuing) {
+      request ? input : 'Continue the current task with one-shot deep analysis.' }] },
+      meta: { origin: request ? DEEP_REQUEST_ORIGIN : DEEP_CONTINUE_ORIGIN } });
+    if (request) {
       await applyPromptMetadataUpdate({ metadata: this.metadata, eventService: this.eventService,
         sessionId: this.sessionContext.sessionId }, promptMetadataTextFromText(`/deep ${input}`));
     }

@@ -103,10 +103,13 @@ export class AgentTitlePromptSourceService implements IAgentTitlePromptSource {
   }
 }
 
+const TITLE_PROMPT_SYSTEM_TRIGGERS: ReadonlySet<string> = new Set(['deep_request']);
+
 function isNaturalLanguagePrompt(message: ContextMessage): boolean {
   if (message.role !== 'user') return false;
   const origin = message.origin;
-  return origin === undefined || origin.kind === 'user';
+  return origin === undefined || origin.kind === 'user' ||
+    (origin.kind === 'system_trigger' && TITLE_PROMPT_SYSTEM_TRIGGERS.has(origin.name));
 }
 
 function promptMetadataTextFromUserMessage(message: ContextMessage): string | undefined {
