@@ -1,3 +1,4 @@
+import type { Event } from '#/_base/event';
 import { createDecorator } from '#/_base/di/instantiation';
 import type { IDisposable } from '#/_base/di/lifecycle';
 import { Error2, isError2, type Error2Options } from '#/_base/errors/errors';
@@ -275,6 +276,8 @@ export interface IAgentLoopService extends EffectiveProfileReader {
   addActiveTool(name: string): void;
 
   removeActiveTool(name: string): void;
+
+  readonly onDidAppendMessage: Event<ContextMessage>;
 
   history(): readonly ContextMessage[];
 

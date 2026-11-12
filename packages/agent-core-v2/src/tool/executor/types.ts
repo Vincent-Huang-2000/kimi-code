@@ -204,6 +204,7 @@ export interface ToolExecutorHook<TContext = unknown, TPrepared = unknown> {
     context: ToolDecisionContext<any, TContext, TPrepared>,
   ): ToolDecision | void | Promise<ToolDecision | void>;
   beforeExecute?(context: ToolDecisionContext<any, TContext, TPrepared>): void | Promise<void>;
+  executing?(context: ToolDecisionContext<any, TContext, TPrepared>): ToolCallRejection | void;
   afterExecute?(
     context: AfterExecuteHookContext<any, TContext, TPrepared>,
   ): ToolResult | void | Promise<ToolResult | void>;

@@ -79,6 +79,8 @@ export class PromptCacheGuardedLoopRequester implements LoopRequester {
     };
   }
 
+  registerHook(hook: Parameters<LoopRequester['registerHook']>[0]) { return this.inner.registerHook(hook); }
+
   async prepareOperation(options: OperationLoopRequesterOptions, signal: AbortSignal): Promise<CoreLoopRequester> {
     await this.ready?.();
     const requester = await this.inner.prepareOperation(options, signal);

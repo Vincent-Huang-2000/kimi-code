@@ -429,6 +429,65 @@ async function startMetadataTurn(
   }));
 }
 
+describe('AgentLoopRequestFactory attempt admission', () => {
+  it('awaits admission and settlement for a text-only operation', async () => {
+    const calls = { value: 0 };
+    const { service } = createService(createRequester(calls, null));
+    const entered = createControlledPromise<void>();
+    const release = createControlledPromise<void>();
+    const settled: string[] = [];
+    service.registerHook({
+      beforeAttempt: async (context) => {
+        expect(context.source).toEqual({ type: 'operation' });
+        expect(context.attempt).toBe(1);
+        entered.resolve();
+        await release;
+      },
+      afterAttempt: async (context) => { settled.push(context.outcome.type); },
+    });
+    const pending = request(service);
+    await entered;
+    expect(calls.value).toBe(0);
+    release.resolve();
+    await pending;
+    expect(calls.value).toBe(1);
+    expect(settled).toEqual(['done']);
+  });
+
+  it('settles a failed attempt before rejecting recovery without sending again', async () => {
+    const calls = { value: 0 };
+    const { service } = createService(createRequester(calls));
+    const phases: string[] = [];
+    const requests: string[] = [];
+    service.registerHook({
+      beforeAttempt: (context) => {
+        phases.push('admit:' + context.attempt);
+        requests.push(context.logicalRequestId);
+        if (context.attempt > 1) throw new Error('analysis budget exhausted');
+      },
+      afterAttempt: (context) => { phases.push('settle:' + context.attempt + ':' + context.outcome.type); },
+    });
+    await expect(request(service)).rejects.toThrow('analysis budget exhausted');
+    expect(calls.value).toBe(1);
+    expect(phases).toEqual(['admit:1', 'settle:1:failed', 'admit:2']);
+    expect(new Set(requests).size).toBe(1);
+  });
+
+  it('settles cancellation after admission without sending or retrying', async () => {
+    const calls = { value: 0 };
+    const { service } = createService(createRequester(calls, null));
+    const controller = new AbortController();
+    const settled: string[] = [];
+    service.registerHook({
+      beforeAttempt: () => { controller.abort('cancelled'); },
+      afterAttempt: (context) => { settled.push(context.outcome.type); },
+    });
+    await expect(request(service, {}, undefined, controller.signal)).rejects.toThrow();
+    expect(calls.value).toBe(0);
+    expect(settled).toEqual(['aborted']);
+  });
+});
+
 describe('AgentLoopRequestFactory measured anchors', () => {
   it('skips the measured anchor when the stream reports no usage', async () => {
     const { service, measuredCalls } = createService(createRequester({ value: 0 }));

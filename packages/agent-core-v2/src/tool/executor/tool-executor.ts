@@ -161,6 +161,10 @@ export class ToolExecutor<TContext = unknown> {
         control.enter('before-execute');
         await hook?.beforeExecute?.(decisionContext());
         control.signal.throwIfAborted();
+        const executionDecision = hook?.executing?.(decisionContext());
+        if (executionDecision !== undefined) {
+          throw new ToolStop(rejected('before-execute', executionDecision.reject, executionDecision.data), executionDecision.result);
+        }
         control.startExecution();
         control.use(tool);
         const toolContext: ToolExecuteContext<unknown, TContext, any, any> = {
@@ -179,17 +183,17 @@ export class ToolExecutor<TContext = unknown> {
           control.settleExecution();
         }
         return control.returned(returned);
-      } catch (thrown) {
-        if (thrown instanceof ToolStop && thrown.result !== undefined) {
-          return control.returned(thrown.result, thrown.error);
+      } catch (error) {
+        if (error instanceof ToolStop && error.result !== undefined) {
+          return control.returned(error.result, error.error);
         }
         const currentTool = this.tools.get(call.name);
         if (control.wasStopped() && currentTool !== undefined) control.use(currentTool);
-        const error = control.wasStopped()
+        const toolError = control.wasStopped()
           ? abortedError(control.call, control.phase, 'stopped', control.stopCause())
-          : toToolError(control, thrown);
-        if (isPreExecutionHookError(error)) throw preExecutionHookFailure(error);
-        return this.fail(control, error);
+          : toToolError(control, error);
+        if (isPreExecutionHookError(toolError)) throw preExecutionHookFailure(toolError);
+        return this.fail(control, toolError);
       }
     };
 
@@ -219,18 +223,18 @@ export class ToolExecutor<TContext = unknown> {
           };
           const replaced = await hook?.afterExecute?.(hookContext);
           if (replaced !== undefined) result = reconcile(result, replaced, call.id);
-        } catch (thrown) {
-          const thrownError = toToolError(control, thrown);
+        } catch (error) {
+          const thrownError = toToolError(control, error);
           const failed = this.fail(control, thrownError);
           result = result.outcome.type === 'aborted'
             ? { ...failed, outcome: result.outcome }
             : failed;
         }
         return result;
-      } catch (thrown) {
-        const error = toToolError(control, thrown);
-        if (isPreExecutionHookError(error)) throw preExecutionHookFailure(error);
-        return control.errorResult(error, [{ type: 'text', text: error.reason }]);
+      } catch (error) {
+        const toolError = toToolError(control, error);
+        if (isPreExecutionHookError(toolError)) throw preExecutionHookFailure(toolError);
+        return control.errorResult(toolError, [{ type: 'text', text: toolError.reason }]);
       }
     })();
 
@@ -837,8 +841,8 @@ function generateTaskId(name: string): string {
   const prefix = name
     .trim()
     .toLowerCase()
-    .replace(/[^a-z0-9]+/g, '-')
-    .replace(/^-+|-+$/g, '');
+    .replaceAll(/[^a-z0-9]+/g, '-')
+    .replaceAll(/^-+|-+$/g, '');
   const bytes = randomBytes(8);
   let suffix = '';
   for (let index = 0; index < bytes.length; index += 1) {

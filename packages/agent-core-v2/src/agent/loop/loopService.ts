@@ -1,3 +1,4 @@
+import { Emitter } from '#/_base/event';
 import { randomUUID } from 'node:crypto';
 
 import { Disposable, toDisposable, type IDisposable } from '#/_base/di/lifecycle';
@@ -89,7 +90,7 @@ import {
 } from './loop';
 import { createUserEntry, type HistoryMessage, type UserEntry } from '#human/agent/turn';
 import { TurnCancel, turnKey } from './turnOps';
-import { EMPTY_LOOP_PROMPT, historyEntryFromContext } from './history';
+import { EMPTY_LOOP_PROMPT, contextFromHistoryEntry, historyEntryFromContext } from './history';
 import {
   createLoop,
   createMaxStepsHook,
@@ -112,6 +113,8 @@ export const loopDisposingKey = defineState<boolean>('loop.disposing', () => fal
 export class AgentLoopService extends Disposable implements IAgentLoopService {
   declare readonly _serviceBrand: undefined;
 
+  private readonly appendedMessage = this._register(new Emitter<ContextMessage>());
+  readonly onDidAppendMessage = this.appendedMessage.event;
   readonly requester: LoopRequester;
   private readonly requestFactory: AgentLoopRequestFactory;
   readonly hooks: IAgentLoopService['hooks'] = {
@@ -173,6 +176,7 @@ export class AgentLoopService extends Disposable implements IAgentLoopService {
     requester.registerMediaPolicy((model, request) => createAgentMediaPolicy(mediaResolver, model, request));
     requester.bindHistory(() => this.history());
     this.requester = {
+      registerHook: (hook) => requester.registerHook(hook),
       createTurnExecution: (input) => requester.createTurnExecution(input),
       prepareOperation: async (options, signal) => {
         if (this.loop === undefined) throw new BugIndicatingError('Agent loop is not started');
@@ -470,6 +474,10 @@ export class AgentLoopService extends Disposable implements IAgentLoopService {
       this.turns.project(enriched, loop);
       this.projectTaskEvent(enriched);
       if (event.type !== 'llm.retrying') this.journal.append(enriched);
+      if (event.type === 'message.appended') {
+        const original = event.source === 'normal' ? this.prompts.pending(event.turnId)?.entry : undefined;
+        this.appendedMessage.fire(contextFromHistoryEntry(original ?? event.entry));
+      }
       if ((event.type === 'tool.async_ended' || (event.type === 'tool.ended' && !event.detached)) && event.taskId !== undefined) {
         this.toolExecutor.release(event.taskId);
       }
@@ -827,7 +835,7 @@ export class AgentLoopService extends Disposable implements IAgentLoopService {
       pending.message = {
         role: 'user',
         content: [
-          ...ctx.hookParts,
+          ...ctx.hookParts.map((part) => ({ ...part, meta: { ...part.meta, source: 'hook_result' } })),
           ...gateImageFormatParts(promptMessage.content, this.getModelProviderType()),
         ],
       };

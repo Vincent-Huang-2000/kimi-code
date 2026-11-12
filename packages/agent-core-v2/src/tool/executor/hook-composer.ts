@@ -46,6 +46,12 @@ export function composeToolExecutorHooks<TContext = unknown, TPrepared = unknown
         await hook.beforeExecute?.call(hook, context);
       }
     },
+    executing(context) {
+      for (const hook of hooks) {
+        const decision = hook.executing?.call(hook, context);
+        if (decision !== undefined) return decision;
+      }
+    },
     async afterExecute(context) {
       let current: AfterExecuteHookContext<any, TContext, TPrepared> = context;
       let result = context.result;

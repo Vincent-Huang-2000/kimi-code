@@ -2,9 +2,16 @@ import type { ContextMessage } from '#/agent/contextMemory/types';
 import type { ToolInputDisplay } from '#/tool/toolInputDisplay';
 import type { HistoryMessage } from '#human/agent/turn';
 import type { UserMessage } from '#human/llm/message';
+import { isSkillActivationPart } from '#human/agent/origin';
 import { emptyUsage } from '#human/llm-requester/usage';
 
 export const EMPTY_LOOP_PROMPT: UserMessage = { role: 'user', content: [] };
+
+export function userInputText(message: ContextMessage): string | undefined {
+  if (message.role !== 'user' || message.origin?.kind !== 'user') return undefined;
+  return message.content.flatMap((part) => part.type === 'text' &&
+    part.meta?.['source'] !== 'hook_result' && !isSkillActivationPart(part) ? [part.text] : []).join('\n');
+}
 
 export function historyEntryFromContext(entry: ContextMessage): HistoryMessage {
   const meta = {

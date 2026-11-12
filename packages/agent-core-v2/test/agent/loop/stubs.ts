@@ -92,6 +92,7 @@ function registry(): { handlers: LoopErrorHandler[]; register: IAgentLoopService
   return { handlers, register };
 }
 export class StubEffectiveProfileReader {
+  readonly onDidAppendMessage = () => toDisposable(() => {});
   async applyProfile(): Promise<void> {}
   useProfile(): void {}
   update(): void {}
@@ -135,7 +136,12 @@ export function stubLoopWithHooks(options: StubLoopOptions = {}): StubLoop {
   const messages: ContextMessage[] = [];
   const stub: StubLoop = {
     _serviceBrand: undefined, hooks, launches, cancels, startTurn, batchStartingHooks,
-    requester: {} as IAgentLoopService['requester'],
+    onDidAppendMessage: () => toDisposable(() => {}),
+    requester: {
+      registerHook: () => toDisposable(() => {}),
+      createTurnExecution: () => { throw new Error('Requester is not configured'); },
+      prepareOperation: async () => { throw new Error('Requester is not configured'); },
+    },
     registerToolBatchStarting(hook) {
       batchStartingHooks.push(hook);
       return toDisposable(() => {

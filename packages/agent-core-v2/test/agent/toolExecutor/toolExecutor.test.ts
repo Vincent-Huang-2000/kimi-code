@@ -156,6 +156,40 @@ afterEach(() => {
 });
 
 describe('AgentToolExecutorService', () => {
+  it('rechecks the execution guard after waiting for a conflicting file lease', async () => {
+    const started = deferred();
+    const release = deferred();
+    const queued = deferred();
+    let blocked = false;
+    const accesses = ToolAccesses.writeFile('/repo/shared.ts');
+    registry.register(new TestTool('holding', { accesses, execute: async () => {
+      started.resolve();
+      await release.promise;
+      return { output: 'done' };
+    } }));
+    const writing = new TestTool('writing', { accesses });
+    registry.register(writing);
+    executor.registerHook({
+      beforeExecute: (context) => { if (context.call.name === 'writing') queued.resolve(); },
+      executing: (context) => context.call.name === 'writing' && blocked
+        ? { reject: 'User correction requires review.' } : undefined,
+    });
+    const first = executor.executor.execute(toolCall('holding-1', 'holding', {}), { turnId: 1, step: 1 });
+    await started.promise;
+    const second = executor.executor.execute(toolCall('writing-1', 'writing', {}), { turnId: 1, step: 1 });
+    await queued.promise;
+    expect(writing.calls).toHaveLength(0);
+    blocked = true;
+    release.resolve();
+    await first.wait();
+    await expect(second.wait()).resolves.toMatchObject({ outcome: { type: 'failed', error: { type: 'rejected', phase: 'before-execute' } } });
+    expect(writing.calls).toHaveLength(0);
+    blocked = false;
+    const third = executor.executor.execute(toolCall('writing-2', 'writing', {}), { turnId: 1, step: 1 });
+    await expect(third.wait()).resolves.toMatchObject({ outcome: { type: 'success' } });
+    for (const handler of [first, second, third]) executor.release(handler.taskId);
+  });
+
   it('resolves by interface and routes a successful tool call through execute', async () => {
     vi.useFakeTimers();
     try {
@@ -839,7 +873,7 @@ describe('AgentToolExecutorService', () => {
         expect.objectContaining({ output: 'Tool "first" was aborted', isError: true }),
         expect.objectContaining({ output: 'Tool "second" was aborted', isError: true }),
       ]);
-      expect([...durations].sort((a, b) => a - b)).toEqual([0, 25]);
+      expect([...durations].toSorted((a, b) => a - b)).toEqual([0, 25]);
     } finally {
       vi.useRealTimers();
     }

@@ -1,3 +1,5 @@
+import { randomUUID } from 'node:crypto';
+import { toDisposable, type IDisposable } from '#/_base/di/lifecycle';
 import { createRecoveryLedger, type LlmRecovery, type LlmRecoveryLedger } from '#human/llm/policy/recovery';
 import { ISessionTokenCountingService } from '#/session/tokenCounting/sessionTokenCounting';
 import { IInstantiationService } from '#/_base/di/instantiation';
@@ -22,6 +24,8 @@ import { RequestMetadataTracker, requestMetadataHeaders } from './requestMetadat
 import {
   agentLLMRequestLogFields,
   type AgentTurnExecutionInput,
+  type LoopRequestHook,
+  type LoopRequestAttemptContext,
   type CoreLoopRequester,
   type CoreLoopRequesterOptions,
   type RequestConfigSnapshot,
@@ -71,6 +75,7 @@ interface PreparedCoreRequest {
 }
 
 export class AgentLoopRequestFactory {
+  private readonly requestHooks = new Set<LoopRequestHook>();
   private readonly projector: AgentLoopProjector;
   private readonly requestMetadata: RequestMetadataTracker;
   private mediaPolicyFactory: AgentMediaPolicyFactory | undefined;
@@ -95,6 +100,11 @@ export class AgentLoopRequestFactory {
 
   private get toolSelect(): IAgentToolSelectService {
     return this.instantiation.invokeFunction((accessor) => accessor.get(IAgentToolSelectService));
+  }
+
+  registerHook(hook: LoopRequestHook): IDisposable {
+    this.requestHooks.add(hook);
+    return toDisposable(() => this.requestHooks.delete(hook));
   }
 
   registerMediaPolicy(factory: AgentMediaPolicyFactory): void {
@@ -256,6 +266,10 @@ export class AgentLoopRequestFactory {
     const source = options.source();
     const config = options.config ?? this.requestConfigSnapshot();
     const observation = this.observer.start(source, config, options.onTrace);
+    const logicalRequestId = randomUUID();
+    const hooks = [...this.requestHooks];
+    let attempt = 0;
+    let activeAttempt: LoopRequestAttemptContext | undefined;
     try {
       const prepared = this.prepareCoreRequest(options, part, rest, source, config);
       const { resolved, mediaPolicy, request } = prepared;
@@ -280,6 +294,23 @@ export class AgentLoopRequestFactory {
         {
           signal: control.signal,
           recoveries: recoveryLedger,
+          beforeAttempt: async (attemptRequest) => {
+            const context: LoopRequestAttemptContext = {
+              logicalRequestId, attempt: ++attempt, source,
+              request: attemptRequest, signal: control.signal,
+            };
+            activeAttempt = context;
+            for (const hook of hooks) await hook.beforeAttempt?.(context);
+            await control.beforeAttempt?.(attemptRequest);
+          },
+          afterAttempt: async (attemptRequest, outcome) => {
+            const context = activeAttempt;
+            activeAttempt = undefined;
+            if (context !== undefined) {
+              for (const hook of hooks) await hook.afterAttempt?.({ ...context, outcome });
+            }
+            await control.afterAttempt?.(attemptRequest, outcome);
+          },
           onAttempt: (attemptRequest) => {
             this.observer.recordAttempt(observation, attemptRequest, recoveryLedger);
           },

@@ -34,6 +34,8 @@ export interface LlmRunControl {
   readonly signal: AbortSignal;
   readonly recoveries?: LlmRecoveryLedger;
   readonly onAttempt?: (request: LlmRequest) => void;
+  readonly beforeAttempt?: (request: LlmRequest) => void | Promise<void>;
+  readonly afterAttempt?: (request: LlmRequest, outcome: LlmOutcome) => void | Promise<void>;
   readonly onEvent?: (event: LlmRunEvent) => void;
 }
 
@@ -184,9 +186,21 @@ async function runAttempts(
       throw error;
     }
 
-    start(resolvedRequest);
-    control.onAttempt?.(resolvedRequest);
-    const result = await settle(resolvedRequest, { signal, onEvent });
+    if (control.beforeAttempt !== undefined) await control.beforeAttempt(resolvedRequest);
+    let result: LlmOutcome;
+    try {
+      signal.throwIfAborted();
+      start(resolvedRequest);
+      control.onAttempt?.(resolvedRequest);
+      result = await settle(resolvedRequest, { signal, onEvent });
+    } catch (error) {
+      const failed: LlmOutcome = signal.aborted || isAbortError(error)
+        ? { type: 'aborted', message: null, usage: undefined, reason: signal.reason }
+        : { type: 'failed', error: toLlmErrorMessage(error), rawError: error };
+      if (control.afterAttempt !== undefined) await control.afterAttempt(resolvedRequest, failed);
+      throw error;
+    }
+    if (control.afterAttempt !== undefined) await control.afterAttempt(resolvedRequest, result);
     if (result.type === 'done' || result.type === 'aborted') {
       return result;
     }

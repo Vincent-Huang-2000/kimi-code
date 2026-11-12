@@ -3,6 +3,9 @@ import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 
 import type { ToolCall } from '#human/llm/message';
 import type { LoopRecordedEvent } from '#/agent/contextMemory/loopEventFold';
+import type { ContextMessage } from '#/agent/contextMemory/types';
+import { contextFromHistoryEntry, userInputText } from '#/agent/loop/history';
+import { restoreLoopJournal } from '#/agent/loop/journal';
 import { IAgentLoopService } from '#/agent/loop/loop';
 import { LOOP_CONTROL_SECTION } from '#/agent/loop/configSection';
 import { IConfigService } from '#/app/config/config';
@@ -339,6 +342,8 @@ describe('core LoopService integration', () => {
 
   it('distinguishes prompt blocked and gate failure while applying hookParts on success', async () => {
     const loop = ctx.get(IAgentLoopService);
+    const observed: ContextMessage[] = [];
+    loop.onDidAppendMessage((message) => { if (message.origin?.kind === 'user') observed.push(message); });
     loop.hooks.onBeforeSubmitPrompt.register('test-gate', async (hookCtx, next) => {
       const text = hookCtx.promptMessage.content[0];
       const value = text?.type === 'text' ? text.text : '';
@@ -368,6 +373,15 @@ describe('core LoopService integration', () => {
     expect(allowedCompletion).toMatchObject({ state: 'completed' });
     expect(ctx.llmCalls).toHaveLength(1);
     expect(JSON.stringify(ctx.lastLlmInput())).toContain('hook-prefix');
+    expect(observed).toMatchObject([
+      { id: 'blocked', content: [{ type: 'text', text: 'block' }] },
+      { id: 'failed', content: [{ type: 'text', text: 'fail' }] },
+      { id: 'allowed', content: [{ type: 'text', text: 'allowed' }] },
+    ]);
+    const saved = loop.history().find((message) => message.id === 'allowed')!;
+    expect(saved.content).toContainEqual({ type: 'text', text: 'hook-prefix', meta: { source: 'hook_result' } });
+    const restored = restoreLoopJournal([{ type: 'context.append_message', message: JSON.parse(JSON.stringify(saved)) }]);
+    expect(userInputText(contextFromHistoryEntry(restored.input.messages![0]!))).toBe('allowed');
   });
 
   it('resets the same core loop after undo with continuous turn ids and history revision', async () => {
@@ -420,6 +434,11 @@ describe('core LoopService integration', () => {
 
   it('steers a queued prompt into the next turn and settles both waiters', async () => {
     const loop = ctx.get(IAgentLoopService);
+    const observed: string[] = [];
+    loop.onDidAppendMessage((message) => {
+      const text = userInputText(message);
+      if (text !== undefined) observed.push(text);
+    });
     let release!: () => void;
     const started = new Promise<void>((resolve) => {
       loop.hooks.onWillBeginStep.register('hold-first-step', async (hookCtx, next) => {
@@ -448,6 +467,7 @@ describe('core LoopService integration', () => {
 
     await expect(loop.promptHandle(first.id)!.completion).resolves.toMatchObject({ state: 'completed' });
     await expect(loop.promptHandle(second.id)!.completion).resolves.toMatchObject({ state: 'completed' });
+    expect(observed).toEqual(['first', 'second']);
     expect(ctx.llmCalls).toHaveLength(2);
     expect(ctx.allEvents).toContainEqual(
       expect.objectContaining({ event: 'prompt.steered', args: expect.objectContaining({ promptIds: ['second'] }) }),

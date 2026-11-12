@@ -1,3 +1,5 @@
+import type { IDisposable } from '#/_base/di/lifecycle';
+import type { LlmRequest } from '#human/llm/request';
 import type { ToolDescription as Tool, Message } from '#human/llm/message';
 import type { LLMRequestTrace } from '#/llm-adapter/contract/request-trace';
 import type { LogContext } from '#/_base/log/log';
@@ -76,7 +78,23 @@ export type OperationLoopRequesterOptions = Omit<CoreLoopRequesterOptions, 'runt
 
 export type CoreLoopRequester = LlmRequester<LlmDimension>;
 
+export interface LoopRequestAttemptContext {
+  readonly logicalRequestId: string;
+  readonly attempt: number;
+  readonly source: AgentLLMRequestSource;
+  readonly request: LlmRequest;
+  readonly signal: AbortSignal;
+}
+export interface LoopRequestAttemptOutcomeContext extends LoopRequestAttemptContext {
+  readonly outcome: LlmOutcome;
+}
+export interface LoopRequestHook {
+  beforeAttempt?(context: LoopRequestAttemptContext): void | Promise<void>;
+  afterAttempt?(context: LoopRequestAttemptOutcomeContext): void | Promise<void>;
+}
+
 export interface LoopRequester {
+  registerHook(hook: LoopRequestHook): IDisposable;
   createTurnExecution(input: AgentTurnExecutionInput): TurnExecution;
   prepareOperation(options: OperationLoopRequesterOptions, signal: AbortSignal): Promise<CoreLoopRequester>;
 }

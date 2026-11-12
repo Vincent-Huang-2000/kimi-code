@@ -2552,6 +2552,7 @@ describe('aborted step tool execution', () => {
 
   it('settles a message-less notification without creating an LLM request', async () => {
     const requester: LoopRequester = {
+      registerHook: () => ({ dispose() {} }),
       createTurnExecution: ({ profile }) => ({
         profile,
         requester: fakeCoreRequester(async () => {
