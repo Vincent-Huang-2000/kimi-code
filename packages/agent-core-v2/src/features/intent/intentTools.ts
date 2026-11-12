@@ -26,7 +26,8 @@ export class IntentTool implements AgentTool<IntentInput> {
     'Explicit requirements need a matching user quotation. Assumptions are not confirmations. Supersede changed explicit items instead of overwriting them. ' +
     'Acknowledge pending inputs with handledInputs and reviewReason. Complete deep with completeAnalysisRunId only after recording goal, acceptance, ' +
     'resolved blocking questions and next actions. Completion never grants permission to modify code for discussion-only requests. ' +
-    'Verification passed/failed requires tool evidence; task completion does not imply acceptance. Use newTaskSourceId only for an explicit task switch.';
+    'Only acceptance items may include verification or evidence. Verification passed/failed requires tool evidence; ' +
+    'task completion does not imply acceptance. Use newTaskSourceId only for an explicit task switch.';
   readonly parameters = toInputJsonSchema(IntentInputSchema);
   constructor(@IIntentService private readonly intent: IIntentService) {}
   resolveExecution(input: IntentInput): ToolExecution {

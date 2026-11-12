@@ -2,6 +2,7 @@ import { describe, expect, it } from 'vitest';
 import { IntentTool } from '#/features/intent/intentTools';
 import type { IIntentService } from '#/features/intent/intentService';
 import { estimateIntentRequestTokens, intentBudgetLevel, reserveIntentRequest, settleIntentUsage } from '#/features/intent/intentBudget';
+import { compileToolArgsValidator, validateToolArgs } from '#/tool/args-validator';
 
 import {
   applyIntentUpdate, fingerprint, intentAllowsEffects, intentNeedsReview, intentProjection,
@@ -370,12 +371,40 @@ describe('Intent replacement and evidence integrity', () => {
     }), 'view-1', 'task-2')).toThrow('separate operation');
   });
 
-  it('does not allow verification fields to disguise an ordinary constraint update', () => {
-    const current = state();
-    expect(() => applyIntentUpdate(current, update(current, {
-      items: [item({ kind: 'constraint', verification: 'unverified' })],
-    }), 'view-1', 'task-2')).toThrow('Only acceptance criteria');
-  });
+  it.each(['goal', 'constraint', 'assumption', 'unknown'] as const)(
+    'rejects verification fields on %s items in both the tool schema and update policy', (kind) => {
+      const current = state();
+      const tool = intentTool(current);
+      const validator = compileToolArgsValidator(tool.parameters);
+      const requirement = item({ kind, certainty: kind === 'unknown' ? 'unknown' : 'explicit' });
+      const valid = { update: update(current, { items: [requirement] }) };
+      expect(validateToolArgs(validator, valid)).toBeNull();
+      expect(() => tool.resolveExecution(valid)).not.toThrow();
+      expect(applyIntentUpdate(current, valid.update, 'view-1', 'task-2').state.current!.items).toEqual([requirement]);
+      for (const fields of [{ verification: 'unverified' as const }, { evidence: [] }]) {
+        const invalid = { update: update(current, { items: [{ ...requirement, ...fields }] }) };
+        expect(validateToolArgs(validator, invalid)).not.toBeNull();
+        expect(() => tool.resolveExecution(invalid)).toThrow();
+        expect(() => applyIntentUpdate(current, invalid.update, 'view-1', 'task-2')).toThrow('Unrecognized key');
+        expect(current.current!.items).toEqual([]);
+      }
+    },
+  );
+
+  it.each([undefined, 'unverified', 'passed', 'failed', 'unavailable'] as const)(
+    'accepts acceptance verification %s through the tool schema and update policy', (verification) => {
+      const current = state();
+      const tool = intentTool(current);
+      const criterion = item({ kind: 'acceptance', verification,
+        evidence: [{ sourceId: 'tool-1', quote: 'All tests passed.' }] });
+      const input = { update: update(current, { items: [criterion] }) };
+      expect(validateToolArgs(compileToolArgsValidator(tool.parameters), input)).toBeNull();
+      expect(() => tool.resolveExecution(input)).not.toThrow();
+      const applied = applyIntentUpdate(current, input.update, 'view-1', 'task-2');
+      expect(applied.state.current!.items).toEqual([criterion]);
+      expect(IntentStateSchema.parse(applied.state)).toEqual(applied.state);
+    },
+  );
 });
 
 describe('Intent replacement validity', () => {
@@ -444,8 +473,37 @@ describe('Intent request budgets', () => {
       ...prepared, model: { ...prepared.model, maxOutputTokens: 'none' },
     }, 500)).toBe(10500);
     expect(estimateIntentRequestTokens({
-      ...request(), profile: { systemPrompt: 'x'.repeat(10000) },
-    })).toBeGreaterThan(5000);
+      ...prepared, profile: { systemPrompt: 'x'.repeat(100000) },
+    })).toBe(10100);
+    expect(estimateIntentRequestTokens({ ...prepared, content: { messages: [], usedTokens: 0 } })).toBe(100);
+  });
+
+  it.each([undefined, Number.NaN, Number.POSITIVE_INFINITY, -1])(
+    'falls back to message and prompt estimates when usedTokens is %s', (usedTokens) => {
+      expect(estimateIntentRequestTokens({
+        ...request(), profile: { systemPrompt: 'abcd中文' },
+        content: { usedTokens, messages: [{ role: 'user', content: [{ type: 'text', text: 'efgh中文' }] }] },
+      })).toBe(107);
+    },
+  );
+
+  it('includes profile tools and dynamically loaded tool definitions in fallback estimates', () => {
+    const tools = [{ name: 'Read', description: 'Read a file.', parameters: { type: 'object' } }];
+    const prepared = { ...request(), content: { messages: [], usedTokens: undefined } };
+    const profileEstimate = estimateIntentRequestTokens({ ...prepared, profile: { tools } });
+    expect(profileEstimate).toBeGreaterThan(100);
+    expect(estimateIntentRequestTokens({ ...prepared, content: {
+      messages: [{ role: 'system', content: [], tools }],
+    } })).toBe(profileEstimate + 2);
+  });
+
+  it('uses a media token estimate instead of counting encoded image characters', () => {
+    for (const length of [4, 100000]) {
+      expect(estimateIntentRequestTokens({ ...request(), content: {
+        messages: [{ role: 'user', content: [{ type: 'image_url',
+          imageUrl: { url: 'data:image/png;base64,' + 'A'.repeat(length) } }] }],
+      } })).toBe(2101);
+    }
   });
 
   it.each(['requests', 'tokens', 'time'])('converges when the %s budget reaches 80%', (dimension) => {

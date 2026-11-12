@@ -28,6 +28,12 @@ export const IntentItemSchema = z.object({
   verification: z.enum(['unverified', 'passed', 'failed', 'unavailable']).optional(),
   evidence: z.array(SourceRefSchema).max(20).optional(),
 });
+const IntentItemUpdateSchema: z.ZodType<IntentItem> = z.discriminatedUnion('kind', [
+  IntentItemSchema.omit({ verification: true, evidence: true }).extend({
+    kind: z.enum(['goal', 'constraint', 'assumption', 'unknown']),
+  }).strict(),
+  IntentItemSchema.extend({ kind: z.literal('acceptance') }).strict(),
+]);
 export const IntentDecisionSchema = z.object({
   id, text, reason: text, scope: text,
   sources: z.array(SourceRefSchema).max(20),
@@ -110,7 +116,7 @@ export const IntentUpdateSchema = z.object({
   intentId: id,
   generation: id,
   expectedRevision: z.number().int().nonnegative(),
-  items: z.array(IntentItemSchema).max(50).optional(),
+  items: z.array(IntentItemUpdateSchema).max(50).optional(),
   decisions: z.array(IntentDecisionSchema).max(30).optional(),
   findings: z.array(IntentFindingSchema).max(30).optional(),
   executionPreparation: PreparationSchema.optional(),
