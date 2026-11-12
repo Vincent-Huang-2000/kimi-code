@@ -13,6 +13,11 @@ import { IAgentTaskService } from '#/agent/task/task';
 import { IAgentEnvironmentService } from '#/agent/environmentBinding/agentEnvironment';
 import { EnvironmentWorkspaceView } from '#/environment/environmentWorkspaceView';
 import { IEventBus } from '#/app/event/eventBus';
+import { IEventService } from '#/app/event/event';
+import { promptMetadataTextFromText } from '#/agent/prompt/promptMetadataText';
+import { ISessionContext } from '#/session/sessionContext/sessionContext';
+import { ISessionMetadata } from '#/session/sessionMetadata/sessionMetadata';
+import { applyPromptMetadataUpdate } from '#/session/sessionMetadata/promptMetadata';
 import { TurnEnded } from '#/agent/loop/turnOps';
 import { reserveIntentRequest, settleIntentUsage, estimateIntentRequestTokens, intentBudgetLevel } from './intentBudget';
 import type { LoopRequestAttemptContext, LoopRequestAttemptOutcomeContext } from '#/agent/loop/requesterContract';
@@ -86,6 +91,9 @@ export class AgentIntentService extends Service implements IIntentService {
     @IEventBus private readonly eventBus: IEventBus,
     @IAgentEnvironmentService private readonly environment: IAgentEnvironmentService,
     @ISessionSubagentService private readonly subagents: ISessionSubagentService,
+    @ISessionMetadata private readonly metadata: ISessionMetadata,
+    @IEventService private readonly eventService: IEventService,
+    @ISessionContext private readonly sessionContext: ISessionContext,
   ) {
     super();
     this.lastEnabled = flags.enabled(INTENT_ENGINE_FLAG);
@@ -596,6 +604,10 @@ export class AgentIntentService extends Service implements IIntentService {
     const entry = this.loop.submit({ message: { role: 'user', content: [{ type: 'text', text:
       input.length > 0 && !continuing ? input : 'Continue the current task with one-shot deep analysis.' }] },
       meta: { origin: { kind: 'system_trigger' } } });
+    if (input.length > 0 && !continuing) {
+      await applyPromptMetadataUpdate({ metadata: this.metadata, eventService: this.eventService,
+        sessionId: this.sessionContext.sessionId }, promptMetadataTextFromText(`/deep ${input}`));
+    }
     const startedRunId = this.confirmed.current?.analysis?.id;
     const handle = this.loop.promptHandle(entry.id);
     void handle?.completion.then(async (completion) => {

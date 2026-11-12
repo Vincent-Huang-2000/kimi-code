@@ -27,6 +27,7 @@ import { IAgentToolExecutorService } from '#/agent/toolExecutor/toolExecutor';
 import { IAgentToolRegistryService } from '#/agent/toolRegistry/toolRegistry';
 import { IAgentLifecycleService } from '#/session/agentLifecycle/agentLifecycle';
 import { ISessionSubagentService } from '#/session/subagent/subagent';
+import { ISessionMetadata } from '#/session/sessionMetadata/sessionMetadata';
 import { interactions } from '#/human/interaction/facade';
 import { createTestAgent, appService, homeDirServices, llmGenerateServices, permissionModeServices, requesterFromGenerateFn,
   type TestAgentContext, type TestAgentServiceOverride } from '../../harness';
@@ -88,6 +89,14 @@ describe('Intent runtime', () => {
     expect(intent.read().state.current?.analysis?.status).toBe('analyzing');
     await intent.command('--cancel');
     expect(intent.read().state.current?.analysis).toMatchObject({ status: 'interrupted', reason: 'cancelled' });
+  });
+
+  it('records a deep request as the session prompt so the session is not listed as empty', async () => {
+    const { context, loop, intent } = await setup();
+    context.mockNextResponse({ type: 'text', text: 'Investigation incomplete.' });
+    await intent.command('Keep the API stable.');
+    await loop.settled();
+    expect((await context.get(ISessionMetadata).read()).lastPrompt).toBe('/deep Keep the API stable.');
   });
 
   it('requires a task and refuses unknown command options', async () => {
