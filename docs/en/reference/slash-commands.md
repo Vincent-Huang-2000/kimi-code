@@ -54,6 +54,10 @@ Some commands are only available in the idle state. Executing these commands whi
 | `/auto` | — | Open the permission mode list with Never Ask preselected; press `Enter` to confirm. In this mode, everything runs and is decided automatically; only plans in Plan mode wait for your review | Yes |
 | `/plan [on\|off]` | — | Toggle Plan mode. Without arguments, flips the current state; explicitly passing `on`/`off` forces the setting. Simply toggling does not create an empty plan file | Yes |
 | `/plan clear` | — | Clear the current plan | No |
+| `/deep [request]` | — | Run one pre-implementation analysis; without a request, reuse the current task | No |
+| `/deep --status` | — | Show the current requirements and analysis status | Yes |
+| `/deep --cancel` | — | Cancel this analysis and keep saved findings | Yes |
+| `/deep --continue` | — | Explicitly continue interrupted analysis with the remaining budget | No |
 | `/swarm on\|off` | — | Turn swarm mode on or off without sending a prompt. `AgentSwarm` only runs while swarm mode is on. | Yes |
 | `/swarm <task>` | — | Turn swarm mode on, then send `<task>` as a normal prompt. If the turn completes normally, swarm mode turns off automatically. In `manual` permission mode, Kimi Code asks whether to switch to Ask When Needed or Never Ask mode before starting. | No |
 | `/tower` or `/tower status` | — | Show the base, missions, roster, review gates, inbox, concurrency, and recent activity without starting a model turn | Yes |
@@ -68,6 +72,32 @@ Tower is experimental. For enablement, workflow, safety, and cleanup boundaries,
 ::: warning
 `/yolo` skips approval for regular tool calls. Please make sure you understand the potential risks before enabling it. Plan mode exit approval is not bypassed by `/yolo`; `Bash` inside Plan mode is still subject to the regular `/yolo` allow rules.
 :::
+
+## Deep analysis (experimental)
+
+`/deep` investigates questions that affect implementation direction, then reuses its findings to continue the original task in the same session. Set `KIMI_CODE_EXPERIMENTAL_INTENT_ENGINE=1` before starting Kimi Code CLI, or set `intent_engine = true` under `[experimental]` in `config.toml`. When enabled, ordinary requests also maintain the current task's goals, constraints, assumptions, and acceptance criteria; you do not need to run `/deep` for every request.
+
+```text
+/deep Reduce time to first interaction while preserving existing CLI arguments
+```
+
+Analysis allows read-only investigation, necessary clarification, and requirement updates. Completion keeps the current task and conversation and does not grant additional permission; discussion-only requests remain discussion-only. Starting analysis while the main task or background work is running is rejected, and your input is kept for retry. If there is no current task, provide a request after `/deep`.
+
+Cancellation, failure, budget exhaustion, and session recovery preserve saved findings without automatically proceeding to implementation. `/deep --continue` resumes interrupted analysis without resetting spent budget; explicitly running `/deep` again starts a new analysis. If interactive questions are unavailable, missing essential information is reported as a blocker instead of assuming an answer.
+
+Each analysis admits up to 30 model requests by default, including retries and investigation subtasks, with a budget of 200000 tokens and 600000 milliseconds of active analysis. You can adjust these experimental starting limits in `config.toml`; they have not yet been calibrated against real-task quality or performance benchmarks.
+
+```toml
+[intent]
+max_requests = 30
+max_tokens = 200000
+max_active_ms = 600000
+output_reserve = 8192
+```
+
+The budget includes input, output, cache-read, and cache-creation tokens. Missing usage is charged against estimated reservations; `output_reserve` reserves output when the model does not provide an output limit. Requests already in flight may exceed estimates. Active analysis time pauses while waiting for foreground question answers.
+
+SDK clients can check `session.listCommands()` and call `await session.runCommand('deep', 'request')`; the command returns `void`, with progress and results delivered through the existing event stream. `kimi -p` does not automatically parse `/deep` in an ordinary prompt as this command. Browser and ACP clients require their own command adapters.
 
 ## Autonomous Goal
 
