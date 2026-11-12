@@ -19,6 +19,7 @@ import { ISessionContext } from '#/session/sessionContext/sessionContext';
 import { ISessionMetadata } from '#/session/sessionMetadata/sessionMetadata';
 import { applyPromptMetadataUpdate } from '#/session/sessionMetadata/promptMetadata';
 import { TurnEnded } from '#/agent/loop/turnOps';
+import { TurnStarted } from '#/agent/loop/turnEvents';
 import { reserveIntentRequest, settleIntentUsage, estimateIntentRequestTokens, intentBudgetLevel } from './intentBudget';
 import type { LoopRequestAttemptContext, LoopRequestAttemptOutcomeContext } from '#/agent/loop/requesterContract';
 import { IAgentReminderService } from '#/features/reminder/reminderService';
@@ -203,11 +204,8 @@ export class AgentIntentService extends Service implements IIntentService {
         }
         if (!this.enabled() && !this.disabled) return;
         if (this.readOnlyTool(name) || (name === 'IntentInvestigate' && this.isBuiltinTool(name))) return;
-        const batch = this.batches.get(context.call.id);
-        if (this.disabled || this.interruptedRun !== undefined || this.failure !== undefined || this.hasPendingUserInput() || !intentAllowsEffects(this.confirmed.current) ||
-          batch?.effects === false || (batch !== undefined && batch.generation !== this.generation)) {
-          return { reject: 'Intent requires review or unfinished analysis. Read Intent; finish and save analysis before a later modification batch.' };
-        }
+        const reason = this.effectsRejection(this.batches.get(context.call.id));
+        if (reason !== undefined) return { reject: reason };
       },
       afterExecute: async (context) => {
         if (!this.enabled()) return;
@@ -294,6 +292,13 @@ export class AgentIntentService extends Service implements IIntentService {
         await owner.settle(context, this.scope.agentId);
       },
     }));
+    this._register(eventBus.subscribe(TurnStarted, (event) => {
+      if (event.agentId !== this.scope.agentId) return;
+      if (event.origin.kind === 'user' && this.enabled() && this.confirmed.current?.analysis?.status === 'analyzing') {
+        void this.interrupt('user_message').catch(() => undefined);
+      }
+      this.interruptedRun = undefined;
+    }));
     this._register(eventBus.subscribe(TurnEnded, (event) => {
       if (event.agentId !== this.scope.agentId) return;
       this.pauseClock();
@@ -314,6 +319,33 @@ export class AgentIntentService extends Service implements IIntentService {
 
   private hasPendingUserInput(): boolean {
     return [...this.pending.values()].some((source) => source.kind === 'user_input' || source.kind === 'user_answer');
+  }
+
+  private effectsRejection(batch: { generation: string; effects: boolean } | undefined): string | undefined {
+    if (this.disabled || this.interruptedRun !== undefined) {
+      return 'Deep analysis was interrupted in this turn; the project cannot be modified until the next turn.';
+    }
+    if (this.failure !== undefined) return `Intent state could not be saved (${this.failure}); reload the session.`;
+    const task = this.confirmed.current;
+    const run = task?.analysis;
+    if (run !== undefined && ['analyzing', 'waiting_for_answer'].includes(run.status)) {
+      return `Deep analysis is ${run.status}: only read-only tools such as Read, Glob and Grep may run; shell commands and edits wait. ` +
+        'Finish with Intent completeAnalysisRunId, then run this tool in a later batch.';
+    }
+    const unhandled = task === undefined ? [] : task.observedInputs.filter((id) => !task.handledInputs.includes(id));
+    const unsynced = [...this.pending.values()].filter((source) => source.kind === 'user_input' || source.kind === 'user_answer');
+    const pending = [...new Set([...unhandled, ...unsynced.map((source) => source.id)])];
+    if (pending.length > 0) {
+      return `Review pending user inputs first (${pending.join(', ')}): read Intent, then submit handledInputs with reviewReason. ` +
+        'Run this tool in a later batch.';
+    }
+    const blocking = task?.items.filter((item) => item.status === 'active' && item.blocking === true && item.resolution === undefined)
+      .map((item) => item.id) ?? [];
+    if (blocking.length > 0) return `Resolve blocking items first (${blocking.join(', ')}), then run this tool in a later batch.`;
+    if (batch?.effects === false || (batch !== undefined && batch.generation !== this.generation)) {
+      return 'Intent changed after this tool batch started; run this tool again in a later batch.';
+    }
+    return undefined;
   }
 
   private enabled(): boolean { return this.scope.agentId === MAIN_AGENT_ID && this.flags.enabled(INTENT_ENGINE_FLAG); }
@@ -582,8 +614,8 @@ export class AgentIntentService extends Service implements IIntentService {
       const next = structuredClone(this.confirmed);
       const task = next.current!;
       if (continuing) {
-        if (task.analysis === undefined || !['interrupted', 'failed'].includes(task.analysis.status)) {
-          throw new IntentError('invalid_transition', 'No interrupted analysis to continue.');
+        if (task.analysis === undefined || !['interrupted', 'failed', 'analyzing'].includes(task.analysis.status)) {
+          throw new IntentError('invalid_transition', 'No unfinished analysis to continue.');
         }
         task.analysis.status = 'analyzing';
         task.analysis.reason = undefined;
@@ -682,16 +714,16 @@ export class AgentIntentService extends Service implements IIntentService {
       const next = structuredClone(this.confirmed);
       const task = next.current;
       if (task === undefined) return;
-      const run = task.analysis;
-      if (run !== undefined && run.status !== 'ready' &&
-        (this.budgetStopped || !['analyzing', 'waiting_for_answer'].includes(run.status))) {
+      const run = task.analysis !== undefined && ['analyzing', 'waiting_for_answer'].includes(task.analysis.status)
+        ? task.analysis : undefined;
+      if (run !== undefined && this.budgetStopped) {
         throw new IntentError('phase_denied', 'Analysis is interrupted. Use /deep --continue or start a new explicit analysis.');
       }
       const key = `${agentId}:${context.logicalRequestId}:${context.attempt}`;
-      const ledger = run !== undefined && run.status !== 'ready' ? run.ledger : next.maintenanceLedger;
+      const ledger = run?.ledger ?? next.maintenanceLedger;
       if (ledger.some((entry) => entry.requestId === key)) return;
       let charged = estimateIntentRequestTokens(context.request);
-      if (run !== undefined && run.status !== 'ready') {
+      if (run !== undefined) {
         try { charged = reserveIntentRequest(run, context.request); }
         catch (error) {
           this.budgetStopped = true;
@@ -711,8 +743,7 @@ export class AgentIntentService extends Service implements IIntentService {
         attempt: context.attempt, charged, estimated: true, activeMs: 0 };
       ledger.push(entry);
       await this.save(next);
-      this.reservations.set(key, { generation: this.generation,
-        runId: run?.status === 'ready' ? undefined : run?.id, started: Date.now() });
+      this.reservations.set(key, { generation: this.generation, runId: run?.id, started: Date.now() });
       this.startClock();
     });
   }

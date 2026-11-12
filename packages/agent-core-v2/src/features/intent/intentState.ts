@@ -18,24 +18,32 @@ export const IntentItemSchema = z.object({
   id,
   kind: z.enum(['goal', 'constraint', 'assumption', 'unknown', 'acceptance']),
   text,
-  certainty: z.enum(['explicit', 'assumption', 'unknown', 'fact']),
-  scope: text,
+  certainty: z.enum(['explicit', 'assumption', 'unknown', 'fact']).describe('explicit: stated by the user (quote a user input or answer); ' +
+    'fact: established by a tool result or finding; assumption: inferred without confirmation; unknown: not yet known (required for kind unknown).'),
+  scope: text.describe('Where the item applies, such as the task or a module name.'),
   sources: z.array(SourceRefSchema).max(20),
-  status: z.enum(['active', 'superseded']),
-  supersedes: id.optional(),
-  blocking: z.boolean().optional(),
-  resolution: text.optional(),
-  verification: z.enum(['unverified', 'passed', 'failed', 'unavailable']).optional(),
+  status: z.enum(['active', 'superseded']).describe('active for current items; superseded retires one. Replace explicit items through supersedes instead.'),
+  supersedes: id.describe('ID of the item this one replaces; the replaced item becomes superseded.').optional(),
+  blocking: z.boolean().describe('True when analysis and project changes must wait until resolution is set.').optional(),
+  resolution: text.describe('How a blocking item was settled.').optional(),
+  verification: z.enum(['unverified', 'passed', 'failed', 'unavailable'])
+    .describe('Acceptance result; passed or failed requires evidence quoting a tool result or subagent finding.').optional(),
   evidence: z.array(SourceRefSchema).max(20).optional(),
 });
 // Updates must cite at least one source; the runtime rejects empty lists, so the tool schema says so up front.
-const RequiredSourcesSchema = z.array(SourceRefSchema).min(1).max(20);
+const RequiredSourcesSchema = z.array(SourceRefSchema).min(1).max(20)
+  .describe('Quotations supporting this record: a sourceId from Intent sources and an exact substring of that source text.');
 const IntentItemUpdateSchema: z.ZodType<IntentItem> = z.discriminatedUnion('kind', [
   IntentItemSchema.omit({ verification: true, evidence: true }).extend({
-    kind: z.enum(['goal', 'constraint', 'assumption', 'unknown']),
+    kind: z.enum(['goal', 'constraint', 'assumption', 'unknown']).describe('goal: the outcome to achieve; constraint: a limit to respect; ' +
+      'assumption: an unconfirmed premise; unknown: an open question. Use acceptance for completion checks; ' +
+      'next actions belong in executionPreparation.nextActions and choices in decisions, not in items.'),
     sources: RequiredSourcesSchema,
   }).strict(),
-  IntentItemSchema.extend({ kind: z.literal('acceptance'), sources: RequiredSourcesSchema }).strict(),
+  IntentItemSchema.extend({
+    kind: z.literal('acceptance').describe('A check showing the task is done; only acceptance items may carry verification and evidence.'),
+    sources: RequiredSourcesSchema,
+  }).strict(),
 ]);
 export const IntentDecisionSchema = z.object({
   id, text, reason: text, scope: text,
@@ -118,15 +126,18 @@ export const IntentUpdateSchema = z.object({
   intentId: id,
   generation: id,
   expectedRevision: z.number().int().nonnegative(),
-  items: z.array(IntentItemUpdateSchema).max(50).optional(),
+  items: z.array(IntentItemUpdateSchema).max(50)
+    .describe('Each entry replaces the stored item with the same id, so send every required field even when changing one.').optional(),
   decisions: z.array(IntentDecisionSchema.extend({ sources: RequiredSourcesSchema })).max(30).optional(),
   findings: z.array(IntentFindingSchema).max(30).optional(),
-  executionPreparation: PreparationSchema.optional(),
-  handledInputs: z.array(id).max(100).optional(),
-  reviewReason: text.optional(),
-  completeAnalysisRunId: id.optional(),
+  executionPreparation: PreparationSchema
+    .describe('Required before finishing analysis: affected modules, at least one next action and validation steps.').optional(),
+  handledInputs: z.array(id).max(100).describe('Pending user input IDs this update reviews; requires reviewReason.').optional(),
+  reviewReason: text.describe('How the reviewed inputs change the requirements, or why no change is needed.').optional(),
+  completeAnalysisRunId: id.describe('The analysisRunId to mark ready. Requires an active goal and acceptance item, resolved blocking items, ' +
+    'all user inputs handled, no pending questions and executionPreparation.nextActions. Project changes may start only in a later tool batch.').optional(),
   lifecycle: z.enum(['active', 'ended']).optional(),
-  newTaskSourceId: id.optional(),
+  newTaskSourceId: id.describe('A user input ID that explicitly starts a different task; send it without other changes.').optional(),
 });
 
 export type IntentSource = z.infer<typeof IntentSourceSchema>;

@@ -169,16 +169,28 @@ export function applyIntentUpdate(state: IntentState, input: IntentUpdate, gener
   }
   if (update.completeAnalysisRunId !== undefined) {
     const analysis = task.analysis;
-    if (analysis?.id !== update.completeAnalysisRunId || analysis.status !== 'analyzing') {
-      throw new IntentError('invalid_transition', 'Only the current analyzing run may finish.');
+    if (analysis === undefined) {
+      throw new IntentError('invalid_transition', 'No analysis is running; completeAnalysisRunId applies only during /deep.');
+    }
+    if (analysis.id !== update.completeAnalysisRunId) {
+      throw new IntentError('invalid_transition', `Unknown analysis run; the current analysisRunId is ${analysis.id}.`);
+    }
+    if (analysis.status !== 'analyzing') {
+      throw new IntentError('invalid_transition', `Analysis ${analysis.id} is ${analysis.status}; only an analyzing run may finish. ` +
+        'The user can resume it with /deep --continue.');
     }
     const active = task.items.filter((item) => item.status === 'active');
-    if (!active.some((item) => item.kind === 'goal') || !active.some((item) => item.kind === 'acceptance') ||
-      active.some((item) => item.blocking === true && item.resolution === undefined) ||
-      task.observedInputs.some((id) => !task.handledInputs.includes(id)) || analysis.pendingQuestions.length > 0 ||
-      task.executionPreparation === undefined || task.executionPreparation.nextActions.length === 0) {
-      throw new IntentError('invalid_transition', 'Resolve blocking unknowns, review inputs, and record a goal, acceptance criteria and next action.');
-    }
+    const blocking = active.filter((item) => item.blocking === true && item.resolution === undefined).map((item) => item.id);
+    const unhandled = task.observedInputs.filter((id) => !task.handledInputs.includes(id));
+    const missing = [
+      ...(active.some((item) => item.kind === 'goal') ? [] : ['record an active goal item']),
+      ...(active.some((item) => item.kind === 'acceptance') ? [] : ['record an active acceptance item']),
+      ...(blocking.length === 0 ? [] : [`set resolution on blocking items ${blocking.join(', ')}`]),
+      ...(unhandled.length === 0 ? [] : [`review pending inputs ${unhandled.join(', ')} with handledInputs and reviewReason`]),
+      ...(analysis.pendingQuestions.length === 0 ? [] : [`wait for answers to questions ${analysis.pendingQuestions.join(', ')}`]),
+      ...((task.executionPreparation?.nextActions.length ?? 0) > 0 ? [] : ['record executionPreparation with at least one nextActions entry']),
+    ];
+    if (missing.length > 0) throw new IntentError('invalid_transition', `Cannot finish analysis yet: ${missing.join('; ')}.`);
     analysis.status = 'ready';
     analysis.reason = undefined;
   }
@@ -199,7 +211,8 @@ export function intentNeedsReview(task: IntentTask | undefined): boolean {
 }
 
 export function intentAllowsEffects(task: IntentTask | undefined): boolean {
-  return !intentNeedsReview(task) && !task?.items.some((item) => item.status === 'active' && item.blocking === true && item.resolution === undefined) && (task?.analysis === undefined || task.analysis.status === 'ready');
+  return !intentNeedsReview(task) && !task?.items.some((item) => item.status === 'active' && item.blocking === true && item.resolution === undefined) &&
+    (task?.analysis === undefined || !['analyzing', 'waiting_for_answer'].includes(task.analysis.status));
 }
 
 export function intentProjection(state: IntentState, generation: string): string {

@@ -196,8 +196,15 @@ describe('Intent state and update policy', () => {
     expect(intentAllowsEffects(result.state.current)).toBe(true);
   });
 
-  it.each(['unknown', 'input', 'question', 'preparation', 'goal', 'acceptance', 'run'])(
-    'keeps analysis blocked when completion lacks %s readiness', (missing) => {
+  it.each([
+    ['unknown', 'set resolution on blocking items unknown'],
+    ['input', 'review pending inputs user-1 with handledInputs and reviewReason'],
+    ['question', 'wait for answers to questions question-1'],
+    ['preparation', 'record executionPreparation with at least one nextActions entry'],
+    ['goal', 'record an active goal item'],
+    ['acceptance', 'record an active acceptance item'],
+    ['run', 'Analysis analysis-1 is interrupted'],
+  ])('keeps analysis blocked when completion lacks %s readiness', (missing, reason) => {
       const current = readyState();
       const task = current.current!;
       if (missing === 'unknown') task.items.push(item({
@@ -210,9 +217,11 @@ describe('Intent state and update policy', () => {
       if (missing === 'acceptance') task.items = task.items.filter((entry) => entry.kind !== 'acceptance');
       if (missing === 'run') task.analysis!.status = 'interrupted';
       const before = structuredClone(current);
-      expect(() => applyIntentUpdate(current, update(current, {
+      const attempt = () => applyIntentUpdate(current, update(current, {
         completeAnalysisRunId: 'analysis-1',
-      }), 'view-1', 'task-2')).toThrow('invalid_transition');
+      }), 'view-1', 'task-2');
+      expect(attempt).toThrow('invalid_transition');
+      expect(attempt).toThrow(reason);
       expect(current).toEqual(before);
     },
   );

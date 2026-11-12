@@ -131,7 +131,66 @@ describe('Intent runtime', () => {
       { id: 'mutation', name: 'ExampleMutation', type: 'function', arguments: '{}' },
     ], { turnId: 1 });
     expect(result[0]?.result.isError).toBe(true);
+    expect(result[0]?.result.output).toContain('Review pending user inputs first');
     expect(execute).not.toHaveBeenCalled();
+  });
+
+  it('returns to ordinary work when a user message follows an unfinished deep turn', async () => {
+    const { context, loop, intent } = await setup();
+    const execute = vi.fn(async () => ({ output: 'clean' }));
+    context.get(IAgentToolRegistryService).register({ name: 'ExampleShell', description: 'run a command',
+      parameters: { type: 'object', properties: {} }, resolveExecution: () => ({ approvalRule: 'ExampleShell', accesses: [], execute }) });
+    context.configure({ tools: ['Intent', 'ExampleShell'] });
+    context.mockNextResponse({ type: 'function', id: 'deep-shell', name: 'ExampleShell', arguments: '{}' });
+    context.mockNextResponse({ type: 'text', text: 'Investigating.' });
+    await intent.command('Review the staged changes.');
+    await loop.settled();
+    expect(execute).not.toHaveBeenCalled();
+    expect(JSON.stringify(loop.history())).toContain('Deep analysis is analyzing');
+    const deepLedger = intent.read().state.current!.analysis!.ledger;
+    expect(intent.read().state.current?.analysis?.status).toBe('analyzing');
+
+    await prompt(context, loop, 'Show the repository status.');
+    expect(context.llmCalls).toHaveLength(3);
+    expect(intent.read().state.current?.analysis).toMatchObject({ status: 'interrupted', reason: 'user_message', ledger: deepLedger });
+    expect(intent.read().state.maintenanceLedger.length).toBeGreaterThan(0);
+
+    const view = intent.read();
+    const task = view.state.current!;
+    await intent.update({ operationId: 'review', intentId: task.intentId, generation: view.generation,
+      expectedRevision: task.revision, handledInputs: task.observedInputs, reviewReason: 'Only report the status.' });
+    context.mockNextResponse({ type: 'function', id: 'later-shell', name: 'ExampleShell', arguments: '{}' });
+    context.mockNextResponse({ type: 'text', text: 'Clean.' });
+    const later = loop.submit({ message: { role: 'user', content: [{ type: 'text', text: 'Continue.' }] },
+      meta: { origin: { kind: 'system_trigger' } } });
+    await loop.promptHandle(later.id)!.completion;
+    expect(execute).toHaveBeenCalledOnce();
+  });
+
+  it('resumes a stalled analysis with --continue', async () => {
+    const { context, loop, intent } = await setup();
+    context.mockNextResponse({ type: 'text', text: 'Investigation incomplete.' });
+    await intent.command('Keep the API stable.');
+    await loop.settled();
+    const runId = intent.read().state.current?.analysis?.id;
+    context.mockNextResponse({ type: 'text', text: 'Still investigating.' });
+    await intent.command('--continue');
+    await loop.settled();
+    expect(context.llmCalls).toHaveLength(2);
+    expect(intent.read().state.current?.analysis).toMatchObject({ id: runId, status: 'analyzing' });
+    expect(intent.read().state.current?.analysis?.ledger).toHaveLength(2);
+  });
+
+  it('lets later messages reach the model after /deep --cancel', async () => {
+    const { context, loop, intent } = await setup();
+    context.mockNextResponse({ type: 'text', text: 'Investigation incomplete.' });
+    await intent.command('Keep the API stable.');
+    await loop.settled();
+    await intent.command('--cancel');
+    await prompt(context, loop, 'Show the repository status.');
+    expect(context.llmCalls).toHaveLength(2);
+    expect(intent.read().state.current?.analysis).toMatchObject({ status: 'interrupted', reason: 'cancelled' });
+    expect(intent.read().state.current?.analysis?.ledger).toHaveLength(1);
   });
 
   it.each([
@@ -230,6 +289,10 @@ describe('Intent runtime', () => {
     await intent.command('--continue');
     await loop.settled();
     expect(context.llmCalls).toHaveLength(1);
+    expect(intent.read().state.current?.analysis?.ledger).toHaveLength(1);
+    await prompt(context, loop, 'Summarize what you found.');
+    expect(context.llmCalls).toHaveLength(2);
+    expect(intent.read().state.current?.analysis).toMatchObject({ status: 'interrupted', reason: 'budget_exhausted' });
     expect(intent.read().state.current?.analysis?.ledger).toHaveLength(1);
   });
 
