@@ -22,15 +22,19 @@ function requirementFingerprint(item: IntentItem | undefined): string {
   return fingerprint(item === undefined ? undefined : { ...item, verification: undefined, evidence: undefined });
 }
 
-export function validateSources(task: IntentTask, refs: readonly SourceRef[], explicit = false): void {
-  if (refs.length === 0) throw new IntentError('invalid_source', 'Provide at least one source reference.');
+export function validateSources(task: IntentTask, refs: readonly SourceRef[], explicit = false, label?: string): void {
+  const target = label === undefined ? '' : ` (${label})`;
+  if (refs.length === 0) {
+    throw new IntentError('invalid_source', `Provide at least one source reference${target}. ` +
+      'Quote the user request, an answer or a tool result; read Intent sources for source IDs.');
+  }
   for (const ref of refs) {
     const source = task.sourceRefs.find((entry) => entry.id === ref.sourceId);
     if (source === undefined || ref.quote.trim().length === 0 || !source.text.includes(ref.quote)) {
-      throw new IntentError('invalid_source', `Source or quotation does not match: ${ref.sourceId}`);
+      throw new IntentError('invalid_source', `Source or quotation does not match${target}: ${ref.sourceId}`);
     }
     if (explicit && source.kind !== 'user_input' && source.kind !== 'user_answer') {
-      throw new IntentError('invalid_source', 'Only a user input or matched answer can support an explicit requirement.');
+      throw new IntentError('invalid_source', `Only a user input or matched answer can support an explicit requirement${target}.`);
     }
   }
 }
@@ -87,7 +91,7 @@ export function applyIntentUpdate(state: IntentState, input: IntentUpdate, gener
   let task = structuredClone(current);
   const replacementTargets = new Set<string>();
   for (const item of update.items ?? []) {
-    validateSources(task, item.sources, item.certainty === 'explicit');
+    validateSources(task, item.sources, item.certainty === 'explicit', `item ${item.id}`);
     if (item.kind === 'unknown' && item.certainty !== 'unknown') {
       throw new IntentError('invalid_transition', 'Resolve or supersede an unknown explicitly.');
     }
@@ -98,9 +102,9 @@ export function applyIntentUpdate(state: IntentState, input: IntentUpdate, gener
     if (item.kind !== 'acceptance' && (item.verification !== undefined || item.evidence !== undefined)) {
       throw new IntentError('invalid_transition', 'Only acceptance criteria may carry verification results.');
     }
-    if (item.evidence !== undefined && item.evidence.length > 0) validateSources(task, item.evidence);
+    if (item.evidence !== undefined && item.evidence.length > 0) validateSources(task, item.evidence, false, `evidence of item ${item.id}`);
     if (item.verification === 'passed' || item.verification === 'failed') {
-      validateSources(task, item.evidence ?? []);
+      validateSources(task, item.evidence ?? [], false, `evidence of item ${item.id}`);
       if (item.evidence?.some((ref) => !['tool_result', 'subagent_finding'].includes(
         task.sourceRefs.find((source) => source.id === ref.sourceId)!.kind))) {
         throw new IntentError('invalid_source', 'Verification requires execution evidence.');
@@ -120,7 +124,7 @@ export function applyIntentUpdate(state: IntentState, input: IntentUpdate, gener
       if (replacementTargets.has(replaced.id)) throw new IntentError('invalid_transition', 'A requirement cannot have two replacements in one operation.');
       if (replaced.certainty === 'explicit') {
         if (item.certainty !== 'explicit') throw new IntentError('invalid_source', 'An assumption cannot replace an explicit requirement.');
-        validateSources(task, item.sources, true);
+        validateSources(task, item.sources, true, `item ${item.id}`);
       }
       replacementTargets.add(replaced.id);
     }
@@ -141,7 +145,7 @@ export function applyIntentUpdate(state: IntentState, input: IntentUpdate, gener
     item.evidence?.some((source) => invalidEvidence.has(source.sourceId))
     ? { ...item, verification: 'unverified' } : item);
   for (const record of [...(update.decisions ?? []), ...(update.findings ?? [])]) {
-    validateSources(task, record.sources);
+    validateSources(task, record.sources, false, `record ${record.id}`);
     if (record.requirementIds.some((id) => !task.items.some((item) => item.id === id))) {
       throw new IntentError('invalid_source', 'A decision or finding references an unknown requirement.');
     }

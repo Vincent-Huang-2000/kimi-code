@@ -391,6 +391,28 @@ describe('Intent replacement and evidence integrity', () => {
     },
   );
 
+  it.each(['items', 'decisions'] as const)('declares and enforces at least one source for %s', (section) => {
+    const current = state();
+    current.current!.items = [item()];
+    const tool = intentTool(current);
+    const validator = compileToolArgsValidator(tool.parameters);
+    const record = section === 'items'
+      ? item({ id: 'unsourced', kind: 'unknown', certainty: 'unknown', text: 'Compatibility is undecided.', sources: [] })
+      : { id: 'unsourced', text: 'Keep defaults.', reason: 'Lower risk.', scope: 'config', sources: [],
+        requirementIds: ['goal'], status: 'active' as const };
+    const invalid = { update: update(current, { [section]: [record] }) };
+    expect(validateToolArgs(validator, invalid)).not.toBeNull();
+    expect(() => tool.resolveExecution(invalid)).toThrow();
+    expect(() => applyIntentUpdate(current, invalid.update, 'view-1', 'task-2')).toThrow();
+  });
+
+  it('names the record whose evidence is missing', () => {
+    const current = readyState();
+    expect(() => applyIntentUpdate(current, update(current, {
+      items: [{ ...current.current!.items[1]!, verification: 'passed' }],
+    }), 'view-1', 'task-2')).toThrow('Provide at least one source reference (evidence of item acceptance)');
+  });
+
   it.each([undefined, 'unverified', 'passed', 'failed', 'unavailable'] as const)(
     'accepts acceptance verification %s through the tool schema and update policy', (verification) => {
       const current = state();
@@ -532,6 +554,17 @@ describe('Intent request budgets', () => {
     if (dimension === 'time') run.activeMs = 1000;
     expect(intentBudgetLevel(run)).toBe('exhausted');
     expect(() => reserveIntentRequest(run, request())).toThrow('budget_exhausted');
+  });
+
+  it('keeps token reservations for observation without rejecting requests that exceed the remaining budget', () => {
+    const run = readyState().current!.analysis!;
+    run.ledger = [usage(49000), { ...usage(50173), requestId: 'request-2' }];
+    run.activeMs = 32000;
+    const prepared = request();
+    prepared.content.usedTokens = 100728;
+    expect(reserveIntentRequest(run, prepared)).toBe(100828);
+    expect(intentBudgetLevel(run)).toBe('normal');
+    expect(run.ledger).toHaveLength(2);
   });
 
   it('estimates large requests without a token admission limit', () => {

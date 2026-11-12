@@ -71,6 +71,7 @@ export class AgentIntentService extends Service implements IIntentService {
   private starting: Promise<void> | undefined;
   private startCancellation: string | undefined;
   private readonly reservations = new Map<string, { generation: string; runId?: string; started: number }>();
+  private pausedByQuestion: string | undefined;
 
   constructor(
     @IEventDispatcher private readonly dispatcher: IEventDispatcher,
@@ -96,6 +97,7 @@ export class AgentIntentService extends Service implements IIntentService {
         ? IntentStateSchema.parse(event.state) : undefined,
       onWillReplay: () => {
         this.generation = randomUUID();
+        this.pausedByQuestion = undefined;
         this.restored = false;
         this.pauseClock();
         this.pending.clear();
@@ -128,6 +130,19 @@ export class AgentIntentService extends Service implements IIntentService {
       if (this.confirmed.current !== undefined) for (const message of loop.history()) this.observe(message);
       if (this.enabled() || this.confirmed.current !== undefined) await this.syncInputs();
       if (this.enabled()) await this.refreshFindings();
+      await next();
+    }));
+    this._register(loop.hooks.onDidFinishStep.register('intent-question', async (context, next) => {
+      const paused = this.pausedByQuestion;
+      this.pausedByQuestion = undefined;
+      if (paused !== undefined) {
+        // End the turn here: a later request would be refused because the analysis is no longer active.
+        // Record the question result now, since no further step will sync it.
+        await this.syncInputs().catch(() => undefined);
+        context.stopTurn = true;
+        context.stopReason = paused;
+        this.show(paused);
+      }
       await next();
     }));
     this._register(reminder.register<string>('intent', async (context) => {
@@ -225,6 +240,13 @@ export class AgentIntentService extends Service implements IIntentService {
               }
               await this.save(next);
               if (active.status === 'failed' || active.status === 'interrupted') this.pauseClock();
+              if (active.status === 'interrupted' && active.reason === 'answer_required') {
+                this.pausedByQuestion = 'Deep analysis paused: the question was not answered. ' +
+                  'Run /deep --continue to ask again, or /deep <request> to start a new analysis.';
+              } else if (active.status === 'failed') {
+                this.pausedByQuestion = `Deep analysis stopped: the question tool failed (${active.reason}). ` +
+                  'Resolve the reported error, then run /deep --continue.';
+              }
             }
           });
         }
@@ -265,6 +287,7 @@ export class AgentIntentService extends Service implements IIntentService {
       if (event.agentId !== this.scope.agentId) return;
       this.pauseClock();
       this.disabled = false;
+      this.pausedByQuestion = undefined;
       const runId = this.turnRuns.get(event.turnId);
       this.turnRuns.delete(event.turnId);
       if (!this.enabled() || this.confirmed.current?.analysis === undefined ||

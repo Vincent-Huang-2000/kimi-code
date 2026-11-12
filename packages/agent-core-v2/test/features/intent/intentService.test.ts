@@ -14,6 +14,7 @@ import { IConfigService } from '#/app/config/config';
 import { IHostEnvironment } from '#/os/interface/hostEnvironment';
 import { IEventBus } from '#/app/event/eventBus';
 import { CommandOutput } from '#/agent/command/commandEvents';
+import { TurnEnded } from '#/agent/loop/turnOps';
 import { IFlagService } from '#/app/flag/flag';
 import { IIntentService } from '#/features/intent/intentService';
 import { IntentCommitted } from '#/features/intent/intentOps';
@@ -290,6 +291,40 @@ describe('Intent runtime', () => {
     expect(restored.intent.read().state.current?.analysis).toMatchObject({ status: 'interrupted', reason: 'budget_exhausted' });
   });
 
+  it('keeps estimates and settled usage in session records while token limits are disabled', async () => {
+    const { context, loop, intent } = await setup();
+    await context.get(IConfigService).set('intent', { maxTokens: 1 });
+    context.mockNextResponse({ type: 'text', text: 'Investigating the API.' });
+    await intent.command('Keep the API stable.');
+    await loop.settled();
+    const first = intent.read().state.current!.analysis!.ledger[0]!;
+    expect(first.charged).toBeGreaterThan(1);
+    expect(first.estimated).toBe(false);
+    context.mockNextResponse({ type: 'text', text: 'The API boundary is in the public module.' });
+    const entry = loop.submit({ message: { role: 'user', content: [{ type: 'text', text: 'Continue analysis.' }] },
+      meta: { origin: { kind: 'system_trigger' } } });
+    await loop.promptHandle(entry.id)!.completion;
+    expect(context.llmCalls).toHaveLength(2);
+    const run = intent.read().state.current!.analysis!;
+    expect(run.status).toBe('analyzing');
+    expect(run.ledger).toHaveLength(2);
+    await context.wire.flush({ strict: true });
+    const recorded: IntentUsage[] = [];
+    for await (const record of context.wire.readJournal()) {
+      if (record.type === IntentCommitted.type) {
+        recorded.push(...IntentStateSchema.parse(record['state']).current?.analysis?.ledger ?? []);
+      }
+    }
+    for (const usage of run.ledger) {
+      expect(usage.estimated).toBe(false);
+      expect(usage.charged).toBe(usage.input! + usage.output! + usage.cacheRead! + usage.cacheWrite!);
+      expect(recorded).toContainEqual(usage);
+      expect(recorded.some((saved) => saved.requestId === usage.requestId && saved.estimated && saved.charged > 1)).toBe(true);
+    }
+    await context.dispatcher.restore();
+    expect(intent.read().state.current?.analysis?.ledger).toEqual(run.ledger);
+  });
+
   it('keeps old task inputs archived when an explicit new task starts', async () => {
     const { context, loop, intent } = await setup();
     await prompt(context, loop, 'Discuss the existing API.');
@@ -376,6 +411,10 @@ describe('Intent runtime', () => {
       arguments: JSON.stringify({ questions: [{ question: 'Which behavior?', header: 'Scope',
         options: [{ label: 'Existing', description: '' }, { label: 'New', description: '' }],
         multi_select: false }] }) });
+    const output: string[] = [];
+    const ended: string[] = [];
+    context.get(IEventBus).subscribe(CommandOutput, (event) => output.push(event.text));
+    context.get(IEventBus).subscribe(TurnEnded, (event) => ended.push(event.reason));
     await intent.command('Investigate the API.');
     await context.untilQuestion(null);
     await loop.settled();
@@ -385,6 +424,8 @@ describe('Intent runtime', () => {
       expect.objectContaining({ kind: 'tool_result', text: expect.stringContaining('User dismissed the question without answering.') }),
     ]));
     expect(context.llmCalls).toHaveLength(1);
+    expect(ended).toEqual(['completed']);
+    expect(output.at(-1)).toContain('/deep --continue');
   });
 
   it('keeps a stopped question cancelled without treating it as an unanswered question', async () => {
@@ -440,8 +481,11 @@ describe('Intent runtime', () => {
       arguments: JSON.stringify({ questions: [{ question: 'Which behavior?', header: 'Scope',
         options: [{ label: 'Existing', description: '' }, { label: 'New', description: '' }],
         multi_select: false }] }) });
+    const ended: string[] = [];
+    context.get(IEventBus).subscribe(TurnEnded, (event) => ended.push(event.reason));
     await intent.command('Investigate the API.');
     await loop.settled();
+    expect(ended).toEqual(['completed']);
     expect(completed).toHaveBeenCalledWith(expect.objectContaining({
       outcome: { type: 'failed', error: expect.objectContaining({ phase: 'execute', reason: expect.stringContaining(message) }) },
       content: [{ type: 'text', text: expect.stringContaining(message) }],

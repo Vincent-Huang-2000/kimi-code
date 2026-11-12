@@ -28,11 +28,14 @@ export const IntentItemSchema = z.object({
   verification: z.enum(['unverified', 'passed', 'failed', 'unavailable']).optional(),
   evidence: z.array(SourceRefSchema).max(20).optional(),
 });
+// Updates must cite at least one source; the runtime rejects empty lists, so the tool schema says so up front.
+const RequiredSourcesSchema = z.array(SourceRefSchema).min(1).max(20);
 const IntentItemUpdateSchema: z.ZodType<IntentItem> = z.discriminatedUnion('kind', [
   IntentItemSchema.omit({ verification: true, evidence: true }).extend({
     kind: z.enum(['goal', 'constraint', 'assumption', 'unknown']),
+    sources: RequiredSourcesSchema,
   }).strict(),
-  IntentItemSchema.extend({ kind: z.literal('acceptance') }).strict(),
+  IntentItemSchema.extend({ kind: z.literal('acceptance'), sources: RequiredSourcesSchema }).strict(),
 ]);
 export const IntentDecisionSchema = z.object({
   id, text, reason: text, scope: text,
@@ -116,7 +119,7 @@ export const IntentUpdateSchema = z.object({
   generation: id,
   expectedRevision: z.number().int().nonnegative(),
   items: z.array(IntentItemUpdateSchema).max(50).optional(),
-  decisions: z.array(IntentDecisionSchema).max(30).optional(),
+  decisions: z.array(IntentDecisionSchema.extend({ sources: RequiredSourcesSchema })).max(30).optional(),
   findings: z.array(IntentFindingSchema).max(30).optional(),
   executionPreparation: PreparationSchema.optional(),
   handledInputs: z.array(id).max(100).optional(),

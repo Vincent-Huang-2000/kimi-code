@@ -23,6 +23,7 @@ export class IntentTool implements AgentTool<IntentInput> {
     'Omit update for a compact overview and the latest 20 source previews. Read section items, decisions, findings or sources with offset and limit (at most 20). ' +
     'Read one sourceId with offset to obtain up to 8000 characters of its exact original text; nextOffset is null when complete. ' +
     'Submit a sourced incremental update with a unique operationId and the current intentId, generation and expectedRevision. ' +
+    'Every item and decision cites at least one source quotation; for assumptions and unknowns quote the user request or tool result they come from. ' +
     'Explicit requirements need a matching user quotation. Assumptions are not confirmations. Supersede changed explicit items instead of overwriting them. ' +
     'Acknowledge pending inputs with handledInputs and reviewReason. Complete deep with completeAnalysisRunId only after recording goal, acceptance, ' +
     'resolved blocking questions and next actions. Completion never grants permission to modify code for discussion-only requests. ' +
