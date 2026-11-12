@@ -1,0 +1,32 @@
+:root[data-kimi-chat-width='compact'] .con:has(.content-wrap) {
+  --read-max: 640px;
+}
+
+:root[data-kimi-chat-width='wide'] .con:has(.content-wrap) {
+  --read-max: 1120px;
+}
+
+[data-kimi-chat-width-setting] {
+  box-sizing: border-box;
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  flex-wrap: wrap;
+  gap: var(--space-3);
+  min-height: var(--browser-settings-row-min-height);
+  padding: var(--space-4);
+  border-top: var(--p-hairline) solid var(--color-line);
+  color: var(--color-text);
+  font: var(--weight-option-label) var(--text-sm) var(--font-ui);
+}
+
+[data-kimi-chat-width-setting] select {
+  box-sizing: border-box;
+  max-width: 100%;
+  padding: var(--space-1-5) var(--space-2);
+  border: 1px solid var(--color-line);
+  border-radius: var(--radius-md);
+  color: inherit;
+  background: var(--color-surface);
+  font: inherit;
+}
