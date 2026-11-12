@@ -44,6 +44,7 @@ import { DEFAULT_PERMISSION_MODE_SECTION } from '#/agent/permissionMode/configSe
 import '#/agent/media/configSection';
 import { IMAGE_SECTION, type ImageConfig } from '#/agent/media/configSection';
 import { READ_SECTION } from '#/agent/tools/os/read/configSection';
+import '#/features/intent/configSection';
 import '#/agent/tokenCounting/configSection';
 import {
   TOKEN_COUNTING_SECTION,
@@ -1001,6 +1002,35 @@ describe('tokenCounting config section', () => {
     });
 
     disposables.dispose();
+  });
+});
+
+describe('Intent config section', () => {
+  it.each([false, true])('preserves analysis limits and diagnoses a legacy token limit (present: %s)', async (legacy) => {
+    const disposables = new DisposableStore();
+    try {
+      const ix = disposables.add(new TestInstantiationService());
+      const storage = new InMemoryStorageService();
+      const toml = '[intent]\nmax_requests = 5\nmax_active_ms = 10000\noutput_reserve = 1024\n' +
+        (legacy ? 'max_tokens = 1\n' : '');
+      await storage.write('', 'config.toml', new TextEncoder().encode(toml));
+      ix.stub(ILogService, stubLog());
+      ix.stub(IBootstrapService, stubBootstrap('/tmp/kimi-cfg', {}));
+      ix.stub(IFileSystemStorageService, storage);
+      ix.set(IAtomicTomlDocumentStore, new SyncDescriptor(TomlAtomicDocumentStore));
+      ix.set(IConfigRegistry, new SyncDescriptor(ConfigRegistry));
+      ix.set(IConfigService, new SyncDescriptor(ConfigService));
+      const config = ix.get(IConfigService);
+      await config.ready;
+      expect(config.get('intent')).toEqual({ maxRequests: 5, maxActiveMs: 10000, outputReserve: 1024 });
+      if (legacy) {
+        expect(config.diagnostics()).toContainEqual({ domain: 'intent', severity: 'warning',
+          message: expect.stringContaining("'max_tokens' is no longer supported") });
+      } else expect(config.diagnostics()).toEqual([]);
+      expect(new TextDecoder().decode(await storage.read('', 'config.toml'))).toBe(toml);
+    } finally {
+      disposables.dispose();
+    }
   });
 });
 

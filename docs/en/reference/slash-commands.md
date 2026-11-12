@@ -85,17 +85,18 @@ Analysis allows read-only investigation, necessary clarification, and requiremen
 
 Cancellation, failure, budget exhaustion, and session recovery preserve saved findings without automatically proceeding to implementation. `/deep --continue` resumes interrupted analysis without resetting spent budget; explicitly running `/deep` again starts a new analysis. If interactive questions are unavailable, missing essential information is reported as a blocker instead of assuming an answer.
 
-Each analysis admits up to 30 model requests by default, including retries and investigation subtasks, with a budget of 200000 tokens and 600000 milliseconds of active analysis. You can adjust these experimental starting limits in `config.toml`; they have not yet been calibrated against real-task quality or performance benchmarks.
+Each analysis admits up to 30 model requests by default, including retries and investigation subtasks, with a limit of 600000 milliseconds of active analysis. Token usage is recorded for observation only and does not trigger convergence warnings or stop analysis. You can adjust the request and active-time limits in `config.toml`; these experimental starting limits have not yet been calibrated against real-task quality or performance benchmarks.
 
 ```toml
 [intent]
 max_requests = 30
-max_tokens = 200000
 max_active_ms = 600000
 output_reserve = 8192
 ```
 
-The budget includes input, output, cache-read, and cache-creation tokens. Missing usage is charged against estimated reservations; `output_reserve` reserves output when the model does not provide an output limit. Requests already in flight may exceed estimates. Active analysis time pauses while waiting for foreground question answers.
+Token accounting includes input, output, cache-read, and cache-creation tokens. Missing usage remains marked as estimated; `output_reserve` supplies the output estimate when the model does not provide an output limit. Estimates and reported usage are saved in session records included in `/export-debug-zip`, and `/deep --status` labels token usage as tracking only. Active analysis time pauses while waiting for foreground question answers.
+
+The `[intent]` option `max_tokens` is no longer supported; remove it from existing configuration files. Older sessions retain their usage records and request and active-time limits when resumed, without restoring a token limit.
 
 SDK clients can check `session.listCommands()` and call `await session.runCommand('deep', 'request')`; the command returns `void`, with progress and results delivered through the existing event stream. `kimi -p` does not automatically parse `/deep` in an ordinary prompt as this command. Browser and ACP clients require their own command adapters.
 

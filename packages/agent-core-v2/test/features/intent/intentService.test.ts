@@ -13,6 +13,8 @@ import { IEventBus } from '#/app/event/eventBus';
 import { CommandOutput } from '#/agent/command/commandEvents';
 import { IFlagService } from '#/app/flag/flag';
 import { IIntentService } from '#/features/intent/intentService';
+import { IntentCommitted } from '#/features/intent/intentOps';
+import { IntentStateSchema, type IntentUsage } from '#/features/intent/intentState';
 import { IAgentLoopService } from '#/agent/loop/loop';
 import { IAgentCommandService } from '#/agent/command/agentCommand';
 import { IEventDispatcher } from '#/state/eventDispatcher';
@@ -20,7 +22,8 @@ import { IAgentToolExecutorService } from '#/agent/toolExecutor/toolExecutor';
 import { IAgentToolRegistryService } from '#/agent/toolRegistry/toolRegistry';
 import { IAgentLifecycleService } from '#/session/agentLifecycle/agentLifecycle';
 import { ISessionSubagentService } from '#/session/subagent/subagent';
-import { createTestAgent, appService, permissionModeServices, type TestAgentContext } from '../../harness';
+import { createTestAgent, appService, llmGenerateServices, permissionModeServices, requesterFromGenerateFn,
+  type TestAgentContext, type TestAgentServiceOverride } from '../../harness';
 import { stubFlag } from '../../app/flag/stubs';
 import { executeLegacyTool } from '../../agent/toolExecutor/execute';
 
@@ -31,9 +34,9 @@ afterEach(async () => {
   for (const directory of directories.splice(0)) await rm(directory, { recursive: true, force: true });
 });
 
-async function setup(enabled = true) {
+async function setup(enabled = true, ...overrides: TestAgentServiceOverride[]) {
   const context = createTestAgent(appService(IFlagService, stubFlag((id) => id === 'intent_engine' && enabled)),
-    appService(IAppendLogStore, new SyncDescriptor(AppendLogStore)), permissionModeServices('yolo'));
+    appService(IAppendLogStore, new SyncDescriptor(AppendLogStore)), permissionModeServices('yolo'), ...overrides);
   contexts.push(context);
   await context.restorePersisted();
   return { context, intent: context.get(IIntentService), loop: context.get(IAgentLoopService) };
@@ -192,7 +195,7 @@ describe('Intent runtime', () => {
 
   it('enforces request budgets for text-only analysis and keeps them on continue', async () => {
     const { context, loop, intent } = await setup();
-    await context.get(IConfigService).set('intent', { maxRequests: 1, maxTokens: 1000000 });
+    await context.get(IConfigService).set('intent', { maxRequests: 1 });
     context.mockNextResponse({ type: 'text', text: 'Still investigating.' });
     await intent.command('Keep the API stable.');
     await loop.settled();
@@ -206,6 +209,76 @@ describe('Intent runtime', () => {
     await loop.settled();
     expect(context.llmCalls).toHaveLength(1);
     expect(intent.read().state.current?.analysis?.ledger).toHaveLength(1);
+  });
+
+  it('keeps estimates and settled usage in session records without a token budget', async () => {
+    const generate = vi.fn(async () => ({ id: 'example-response',
+      message: { role: 'assistant' as const, content: [{ type: 'text' as const, text: 'Investigating the API.' }], toolCalls: [] },
+      usage: { inputOther: 100, output: 20, inputCacheRead: 300000, inputCacheCreation: 0 },
+      finishReason: 'completed' as const, rawFinishReason: 'stop' }));
+    const { context, loop, intent } = await setup(true, llmGenerateServices(requesterFromGenerateFn(generate)));
+    await intent.command('Keep the API stable.');
+    await loop.settled();
+    const first = intent.read().state.current!.analysis!.ledger[0]!;
+    expect(first.charged).toBe(300120);
+    expect(first.estimated).toBe(false);
+    const entry = loop.submit({ message: { role: 'user', content: [{ type: 'text', text: 'Continue analysis.' }] },
+      meta: { origin: { kind: 'system_trigger' } } });
+    await loop.promptHandle(entry.id)!.completion;
+    expect(generate).toHaveBeenCalledTimes(2);
+    const run = intent.read().state.current!.analysis!;
+    expect(run.status).toBe('analyzing');
+    expect(run.budget).not.toHaveProperty('maxTokens');
+    expect(run.ledger).toHaveLength(2);
+    await context.wire.flush({ strict: true });
+    const recorded: IntentUsage[] = [];
+    for await (const record of context.wire.readJournal()) {
+      if (record.type === IntentCommitted.type) {
+        recorded.push(...IntentStateSchema.parse(record['state']).current?.analysis?.ledger ?? []);
+      }
+    }
+    for (const usage of run.ledger) {
+      expect(usage.estimated).toBe(false);
+      expect(usage.charged).toBe(usage.input! + usage.output! + usage.cacheRead! + usage.cacheWrite!);
+      expect(recorded).toContainEqual(usage);
+      expect(recorded.some((saved) => saved.requestId === usage.requestId && saved.estimated && saved.charged > 0)).toBe(true);
+    }
+    await context.dispatcher.restore();
+    expect(intent.read().state.current?.analysis?.ledger).toEqual(run.ledger);
+  });
+
+  it('continues legacy sessions without their token limit while retaining other limits and usage', async () => {
+    const original = await setup();
+    await original.context.get(IConfigService).set('intent', { maxRequests: 2, maxActiveMs: 900000, outputReserve: 4096 });
+    original.context.mockNextResponse({ type: 'text', text: 'Investigating.' });
+    await original.intent.command('Keep the API stable.');
+    await original.loop.settled();
+    const before = original.intent.read().state.current!.analysis!;
+    const legacy = (await original.context.persistedWireRecords()).map((record) => {
+      if (record.type !== IntentCommitted.type) return record;
+      const state = IntentStateSchema.parse(record['state']);
+      const task = state.current;
+      if (task?.analysis === undefined) return record;
+      return { ...record, state: { ...state, current: { ...task, analysis: {
+        ...task.analysis, budget: { ...task.analysis.budget, maxTokens: 1 },
+      } } } };
+    });
+    const restored = await setup();
+    await restored.context.restore(legacy);
+    expect(restored.intent.read().state.current?.analysis).toMatchObject({
+      status: 'interrupted', budget: { maxRequests: 2, maxActiveMs: 900000, outputReserve: 4096 }, ledger: before.ledger,
+    });
+    expect(restored.intent.read().state.current?.analysis?.budget).not.toHaveProperty('maxTokens');
+    restored.context.mockNextResponse({ type: 'text', text: 'Continuing the investigation.' });
+    await restored.intent.command('--continue');
+    await restored.loop.settled();
+    expect(restored.context.llmCalls).toHaveLength(1);
+    expect(restored.intent.read().state.current?.analysis?.ledger).toHaveLength(2);
+    const entry = restored.loop.submit({ message: { role: 'user', content: [{ type: 'text', text: 'Continue analysis.' }] },
+      meta: { origin: { kind: 'system_trigger' } } });
+    await restored.loop.promptHandle(entry.id)!.completion;
+    expect(restored.context.llmCalls).toHaveLength(1);
+    expect(restored.intent.read().state.current?.analysis).toMatchObject({ status: 'interrupted', reason: 'budget_exhausted' });
   });
 
   it('keeps old task inputs archived when an explicit new task starts', async () => {
@@ -300,7 +373,7 @@ describe('Intent runtime', () => {
 
   it('runs read-only investigations against the parent request budget', async () => {
     const { context, loop, intent } = await setup();
-    await context.get(IConfigService).set('intent', { maxRequests: 2, maxTokens: 1000000 });
+    await context.get(IConfigService).set('intent', { maxRequests: 2 });
     context.mockNextResponse({ type: 'text', text: 'Investigating the API.' });
     await intent.command('Keep the API stable.');
     await loop.settled();

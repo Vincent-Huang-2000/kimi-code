@@ -58,7 +58,6 @@ export const PreparationSchema = z.object({
 });
 export const IntentBudgetSchema = z.object({
   maxRequests: z.number().int().positive().default(30),
-  maxTokens: z.number().int().positive().default(200000),
   maxActiveMs: z.number().int().positive().default(600000),
   outputReserve: z.number().int().positive().default(8192),
 });

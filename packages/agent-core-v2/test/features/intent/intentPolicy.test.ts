@@ -506,13 +506,12 @@ describe('Intent request budgets', () => {
     }
   });
 
-  it.each(['requests', 'tokens', 'time'])('converges when the %s budget reaches 80%', (dimension) => {
+  it.each(['requests', 'time'])('converges when the %s budget reaches 80%', (dimension) => {
     const run = readyState().current!.analysis!;
-    run.budget = { maxRequests: 10, maxTokens: 1000, maxActiveMs: 1000, outputReserve: 100 };
+    run.budget = { maxRequests: 10, maxActiveMs: 1000, outputReserve: 100 };
     if (dimension === 'requests') run.ledger = Array.from({ length: 8 }, (_, i) => ({
       ...usage(1), requestId: 'request-' + i,
     }));
-    if (dimension === 'tokens') run.ledger = [usage(800)];
     if (dimension === 'time') run.activeMs = 800;
     expect(intentBudgetLevel(run)).toBe('converge');
     const current = readyState();
@@ -524,24 +523,40 @@ describe('Intent request budgets', () => {
     expect(intentProjection(current, 'view-1')).not.toContain('at least 80% used');
   });
 
-  it.each(['requests', 'tokens', 'time'])('refuses admission when the %s budget is exhausted', (dimension) => {
+  it.each(['requests', 'time'])('refuses admission when the %s budget is exhausted', (dimension) => {
     const run = readyState().current!.analysis!;
-    run.budget = { maxRequests: 10, maxTokens: 1000, maxActiveMs: 1000, outputReserve: 100 };
+    run.budget = { maxRequests: 10, maxActiveMs: 1000, outputReserve: 100 };
     if (dimension === 'requests') run.ledger = Array.from({ length: 10 }, (_, i) => ({
       ...usage(1), requestId: 'request-' + i,
     }));
-    if (dimension === 'tokens') run.ledger = [usage(1000)];
     if (dimension === 'time') run.activeMs = 1000;
     expect(intentBudgetLevel(run)).toBe('exhausted');
     expect(() => reserveIntentRequest(run, request())).toThrow('budget_exhausted');
   });
 
-  it('reserves before dispatch rather than allowing a request to overshoot the remaining budget', () => {
+  it('estimates large requests without a token admission limit', () => {
     const run = readyState().current!.analysis!;
-    run.budget.maxTokens = 1000;
-    run.ledger = [usage(900)];
-    expect(() => reserveIntentRequest(run, request())).toThrow('budget_exhausted');
+    run.ledger = [usage(300000)];
+    const prepared = request();
+    prepared.content.usedTokens = 100728;
+    expect(reserveIntentRequest(run, prepared)).toBe(100828);
+    expect(intentBudgetLevel(run)).toBe('normal');
     expect(run.ledger).toHaveLength(1);
+  });
+
+  it.each([true, false])('does not stop or request convergence for observed tokens (estimated: %s)', (estimated) => {
+    const current = readyState();
+    const run = current.current!.analysis!;
+    for (const charged of [160000, 200000, 1000000]) {
+      run.ledger = [{ ...usage(charged), estimated }];
+      expect(reserveIntentRequest(run, request())).toBeGreaterThan(0);
+      expect(intentBudgetLevel(run)).toBe('normal');
+      const projection = intentProjection(current, 'view-1');
+      expect(projection).toContain(`Token usage: ${charged} (tracking only)`);
+      expect(projection.includes('(includes estimates)')).toBe(estimated);
+      expect(projection).not.toContain('at least 80% used');
+      expect(projection).not.toContain('budget is exhausted');
+    }
   });
 });
 

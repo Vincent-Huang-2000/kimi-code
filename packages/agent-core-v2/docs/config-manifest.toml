@@ -221,7 +221,6 @@ extra_skill_dirs = []
 
 [intent]
 # max_requests: integer (default: 30)
-# max_tokens: integer (default: 200000)
 # max_active_ms: integer (default: 600000)
 # output_reserve: integer (default: 8192)
 

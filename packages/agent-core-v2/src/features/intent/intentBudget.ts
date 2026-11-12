@@ -25,7 +25,6 @@ export function estimateIntentRequestTokens(request: IntentRequest, outputReserv
 export function reserveIntentRequest(run: AnalysisRun, request: IntentRequest): number {
   const reservation = estimateIntentRequestTokens(request, run.budget.outputReserve);
   if (run.ledger.length >= run.budget.maxRequests ||
-    run.ledger.reduce((sum, entry) => sum + entry.charged, 0) + reservation > run.budget.maxTokens ||
     run.activeMs >= run.budget.maxActiveMs) {
     throw new IntentError('budget_exhausted', 'Deep budget reached; no further analysis requests are admitted.');
   }
@@ -36,7 +35,6 @@ export function intentBudgetLevel(run: AnalysisRun | undefined): 'normal' | 'con
   if (run === undefined) return 'normal';
   const fraction = Math.max(
     run.ledger.length / run.budget.maxRequests,
-    run.ledger.reduce((sum, entry) => sum + entry.charged, 0) / run.budget.maxTokens,
     run.activeMs / run.budget.maxActiveMs,
   );
   return fraction >= 1 ? 'exhausted' : fraction >= 0.8 ? 'converge' : 'normal';

@@ -212,9 +212,9 @@ export function intentProjection(state: IntentState, generation: string): string
   if (run !== undefined) {
     const tokens = run.ledger.reduce((sum, entry) => sum + entry.charged, 0);
     const estimated = run.ledger.some((entry) => entry.estimated) ? ' (includes estimates)' : '';
-    lines.push(`Analysis budget: requests ${run.ledger.length}/${run.budget.maxRequests}; ` +
-      `tokens ${tokens}/${run.budget.maxTokens}${estimated}; active seconds ` +
+    lines.push(`Analysis budget: requests ${run.ledger.length}/${run.budget.maxRequests}; active seconds ` +
       `${Math.ceil(run.activeMs / 1000)}/${Math.ceil(run.budget.maxActiveMs / 1000)}.`);
+    lines.push(`Token usage: ${tokens} (tracking only)${estimated}.`);
     if (run.status === 'analyzing' || run.status === 'waiting_for_answer') {
       const level = intentBudgetLevel(run);
       if (level === 'converge') lines.push('Analysis budget is at least 80% used. Converge on the key unknowns; save findings and the next action.');
