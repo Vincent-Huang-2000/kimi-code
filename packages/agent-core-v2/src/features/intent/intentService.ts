@@ -209,13 +209,22 @@ export class AgentIntentService extends Service implements IIntentService {
           await this.serial(async () => {
             const next = structuredClone(this.confirmed);
             const active = next.current?.analysis;
-            if (active?.id === question.runId && active?.status === 'waiting_for_answer') {
+            if (active !== undefined && active.id === question.runId) {
               active.pendingQuestions = active.pendingQuestions.filter((id) => id !== context.call.id);
-              if (active.pendingQuestions.length === 0) {
-                active.status = kind === 'user_answer' ? 'analyzing' : 'interrupted';
-                active.reason = kind === 'user_answer' ? undefined : 'answer_required';
+              if (active.status === 'waiting_for_answer') {
+                if (context.result.outcome.type === 'failed') {
+                  active.status = 'failed';
+                  active.reason = context.result.outcome.error.type === 'output' ? 'question_output_failed' : 'question_failed';
+                } else if (context.result.outcome.type === 'aborted') {
+                  active.status = 'interrupted';
+                  active.reason = 'cancelled';
+                } else if (active.pendingQuestions.length === 0) {
+                  active.status = kind === 'user_answer' ? 'analyzing' : 'interrupted';
+                  active.reason = kind === 'user_answer' ? undefined : 'answer_required';
+                }
               }
               await this.save(next);
+              if (active.status === 'failed' || active.status === 'interrupted') this.pauseClock();
             }
           });
         }

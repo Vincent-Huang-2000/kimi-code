@@ -85,6 +85,8 @@ Analysis allows read-only investigation, necessary clarification, and requiremen
 
 Cancellation, failure, budget exhaustion, and session recovery preserve saved findings without automatically proceeding to implementation. `/deep --continue` resumes interrupted analysis without resetting spent budget; explicitly running `/deep` again starts a new analysis. If interactive questions are unavailable, missing essential information is reported as a blocker instead of assuming an answer.
 
+Analysis continues automatically after a valid answer to a foreground question. Dismissing the question without submitting an answer makes `/deep --status` show `interrupted (answer_required)`; question execution failures show `failed (question_failed)`, and output storage failures show `failed (question_output_failed)`. Resolve the error reported by the tool before using `/deep --continue`; failed tool results are not recorded as user answers.
+
 Each analysis admits up to 30 model requests by default, including retries and investigation subtasks, with a limit of 600000 milliseconds of active analysis. Token usage is recorded for observation only and does not trigger convergence warnings or stop analysis. You can adjust the request and active-time limits in `config.toml`; these experimental starting limits have not yet been calibrated against real-task quality or performance benchmarks.
 
 ```toml

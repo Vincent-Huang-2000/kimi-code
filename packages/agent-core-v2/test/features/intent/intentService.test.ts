@@ -1,10 +1,13 @@
 import { createHash } from 'node:crypto';
-import { mkdtemp, readFile, rm, writeFile } from 'node:fs/promises';
+import { mkdir, mkdtemp, readFile, rm, unlink, writeFile } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
-import { join } from 'pathe';
+import { dirname, join } from 'pathe';
 import { createControlledPromise } from '@antfu/utils';
 import { SyncDescriptor } from '#/_base/di/descriptors';
+import { CoreErrors } from '#/_base/errors/codes';
+import { Error2 } from '#/_base/errors/errors';
 import { IAppendLogStore } from '#/persistence/interface/appendLogStore';
+import { IFileSystemStorageService } from '#/persistence/interface/storage';
 import { AppendLogStore } from '#/persistence/backends/node-fs/appendLogStore';
 import { afterEach, describe, expect, it, vi } from 'vitest';
 import { IConfigService } from '#/app/config/config';
@@ -16,13 +19,15 @@ import { IIntentService } from '#/features/intent/intentService';
 import { IntentCommitted } from '#/features/intent/intentOps';
 import { IntentStateSchema, type IntentUsage } from '#/features/intent/intentState';
 import { IAgentLoopService } from '#/agent/loop/loop';
+import { IAgentScopeContext } from '#/agent/scopeContext/scopeContext';
 import { IAgentCommandService } from '#/agent/command/agentCommand';
 import { IEventDispatcher } from '#/state/eventDispatcher';
 import { IAgentToolExecutorService } from '#/agent/toolExecutor/toolExecutor';
 import { IAgentToolRegistryService } from '#/agent/toolRegistry/toolRegistry';
 import { IAgentLifecycleService } from '#/session/agentLifecycle/agentLifecycle';
 import { ISessionSubagentService } from '#/session/subagent/subagent';
-import { createTestAgent, appService, llmGenerateServices, permissionModeServices, requesterFromGenerateFn,
+import { interactions } from '#/human/interaction/facade';
+import { createTestAgent, appService, homeDirServices, llmGenerateServices, permissionModeServices, requesterFromGenerateFn,
   type TestAgentContext, type TestAgentServiceOverride } from '../../harness';
 import { stubFlag } from '../../app/flag/stubs';
 import { executeLegacyTool } from '../../agent/toolExecutor/execute';
@@ -30,12 +35,16 @@ import { executeLegacyTool } from '../../agent/toolExecutor/execute';
 const contexts: TestAgentContext[] = [];
 const directories: string[] = [];
 afterEach(async () => {
+  vi.restoreAllMocks();
   for (const context of contexts.splice(0)) await context.dispose();
   for (const directory of directories.splice(0)) await rm(directory, { recursive: true, force: true });
 });
 
 async function setup(enabled = true, ...overrides: TestAgentServiceOverride[]) {
-  const context = createTestAgent(appService(IFlagService, stubFlag((id) => id === 'intent_engine' && enabled)),
+  const homeDir = await mkdtemp(join(tmpdir(), 'intent-runtime-'));
+  directories.push(homeDir);
+  const context = createTestAgent(homeDirServices(homeDir),
+    appService(IFlagService, stubFlag((id) => id === 'intent_engine' && enabled)),
     appService(IAppendLogStore, new SyncDescriptor(AppendLogStore)), permissionModeServices('yolo'), ...overrides);
   contexts.push(context);
   await context.restorePersisted();
@@ -354,6 +363,10 @@ describe('Intent runtime', () => {
     expect(answer?.text).toBe('Keep it stable');
     expect(answer?.text).not.toContain('May the API change?');
     expect(intent.read().state.current?.analysis?.status).toBe('analyzing');
+    expect(intent.read().state.current?.analysis?.pendingQuestions).toEqual([]);
+    expect(context.llmCalls).toHaveLength(2);
+    expect(JSON.stringify(context.llmCalls[1]?.history)).toContain('Keep it stable');
+    expect(JSON.stringify(loop.history())).toContain('The API will remain stable.');
   });
 
   it('keeps dismissed questions interrupted without inventing an answer or spending another request', async () => {
@@ -368,7 +381,135 @@ describe('Intent runtime', () => {
     await loop.settled();
     expect(intent.read().state.current?.sourceRefs.some((source) => source.kind === 'user_answer')).toBe(false);
     expect(intent.read().state.current?.analysis).toMatchObject({ status: 'interrupted', reason: 'answer_required' });
+    expect(intent.read().state.current?.sourceRefs).toEqual(expect.arrayContaining([
+      expect.objectContaining({ kind: 'tool_result', text: expect.stringContaining('User dismissed the question without answering.') }),
+    ]));
     expect(context.llmCalls).toHaveLength(1);
+  });
+
+  it('keeps a stopped question cancelled without treating it as an unanswered question', async () => {
+    const { context, loop, intent } = await setup();
+    context.configure({ tools: ['AskUserQuestion'] });
+    context.mockNextResponse({ type: 'function', id: 'stopped-question', name: 'AskUserQuestion',
+      arguments: JSON.stringify({ questions: [{ question: 'Which behavior?', header: 'Scope',
+        options: [{ label: 'Existing', description: '' }, { label: 'New', description: '' }],
+        multi_select: false }] }) });
+    const question = context.snapshots.take('requestQuestion');
+    await intent.command('Investigate the API.');
+    await question;
+    await context.get(IAgentToolExecutorService).handlerForCall('stopped-question')!.stop('Question cancelled');
+    await loop.settled();
+    expect(intent.read().state.current?.analysis).toMatchObject({ status: 'interrupted', reason: 'cancelled', pendingQuestions: [] });
+    expect(intent.read().state.current?.sourceRefs.some((source) => source.kind === 'user_answer')).toBe(false);
+    expect(context.llmCalls).toHaveLength(1);
+  });
+
+  it.each([true, false])('continues ordinary clarification outside deep with Intent enabled=%s', async (enabled) => {
+    const { context, loop, intent } = await setup(enabled);
+    context.configure({ tools: ['AskUserQuestion'] });
+    context.mockNextResponse({ type: 'function', id: 'ordinary-question', name: 'AskUserQuestion',
+      arguments: JSON.stringify({ questions: [{ question: 'Which behavior?', header: 'Scope',
+        options: [{ label: 'Existing', description: '' }, { label: 'New', description: '' }],
+        multi_select: false }] }) });
+    context.mockNextResponse({ type: 'text', text: 'Keep the existing behavior.' });
+    void loop.submit({ input: [{ type: 'text', text: 'Discuss the API.' }] });
+    await context.untilQuestion({ answers: { 'Which behavior?': 'Existing' } });
+    await loop.settled();
+    expect(intent.read().state.current?.analysis).toBeUndefined();
+    expect(context.llmCalls).toHaveLength(2);
+    expect(JSON.stringify(context.llmCalls[1]?.history)).toContain('Existing');
+    expect(JSON.stringify(loop.history())).toContain('Keep the existing behavior.');
+    if (enabled) {
+      expect(intent.read().state.current?.sourceRefs).toEqual(expect.arrayContaining([
+        expect.objectContaining({ kind: 'user_answer', text: 'Existing' }),
+      ]));
+    } else expect(intent.read().state.current).toBeUndefined();
+  });
+
+  it.each([
+    ['exception', new Error('Question transport unavailable'), 'Question transport unavailable'],
+    ['unsupported client', new Error2(CoreErrors.codes.NOT_IMPLEMENTED, 'Questions unsupported'),
+      'The connected client does not support interactive questions.'],
+  ])('reports a question %s as a tool failure instead of an unanswered question', async (_name, error, message) => {
+    const { context, loop, intent } = await setup();
+    context.configure({ tools: ['AskUserQuestion'] });
+    vi.spyOn(interactions, 'request').mockImplementationOnce(() => { throw error; });
+    const completed = vi.fn();
+    context.get(IAgentToolExecutorService).registerHook({ afterExecute: ({ result }) => { completed(result); } });
+    context.mockNextResponse({ type: 'function', id: 'failed-question', name: 'AskUserQuestion',
+      arguments: JSON.stringify({ questions: [{ question: 'Which behavior?', header: 'Scope',
+        options: [{ label: 'Existing', description: '' }, { label: 'New', description: '' }],
+        multi_select: false }] }) });
+    await intent.command('Investigate the API.');
+    await loop.settled();
+    expect(completed).toHaveBeenCalledWith(expect.objectContaining({
+      outcome: { type: 'failed', error: expect.objectContaining({ phase: 'execute', reason: expect.stringContaining(message) }) },
+      content: [{ type: 'text', text: expect.stringContaining(message) }],
+    }));
+    expect(intent.read().state.current?.analysis).toMatchObject({ status: 'failed', reason: 'question_failed', pendingQuestions: [] });
+    expect(intent.read().state.current?.sourceRefs.some((source) => source.kind === 'user_answer')).toBe(false);
+    expect(intent.read().state.current?.sourceRefs).toEqual(expect.arrayContaining([
+      expect.objectContaining({ kind: 'tool_result', text: expect.stringContaining(message) }),
+    ]));
+    expect(context.llmCalls).toHaveLength(1);
+    const output: string[] = [];
+    context.get(IEventBus).subscribe(CommandOutput, (event) => output.push(event.text));
+    await intent.command('--status');
+    expect(output.at(-1)).toContain('Analysis: failed (question_failed).');
+  });
+
+  it('reports question output failures and resumes after storage is repaired', async () => {
+    const { context, loop, intent } = await setup();
+    context.configure({ tools: ['AskUserQuestion'] });
+    const completed = vi.fn();
+    const executor = context.get(IAgentToolExecutorService);
+    executor.registerHook({ afterExecute: ({ result }) => { completed(result); } });
+    const args = JSON.stringify({ questions: [{ question: 'May the API change?', header: 'API',
+      options: [{ label: 'Keep it stable', description: '' }, { label: 'Change it', description: '' }],
+      multi_select: false }] });
+    context.mockNextResponse({ type: 'function', id: 'unpersisted-question', name: 'AskUserQuestion', arguments: args });
+    const question = context.snapshots.take('requestQuestion');
+    await intent.command('Investigate the API.');
+    const { respond } = await question;
+    const taskDir = context.get(IFileSystemStorageService).pathFor(context.get(IAgentScopeContext).scope('tasks'),
+      executor.handlerForCall('unpersisted-question')!.taskId)!;
+    await mkdir(dirname(taskDir), { recursive: true });
+    await writeFile(taskDir, 'Block task output directory creation.');
+    respond({ answers: { 'May the API change?': 'Keep it stable' } });
+    await loop.settled();
+    expect(completed).toHaveBeenCalledWith(expect.objectContaining({
+      outcome: { type: 'failed', error: expect.objectContaining({ type: 'output', phase: 'execute' }) },
+      content: [{ type: 'text', text: expect.stringContaining('output failed') }],
+    }));
+    const failed = intent.read().state.current!;
+    expect(failed.analysis).toMatchObject({ status: 'failed', reason: 'question_output_failed', pendingQuestions: [] });
+    expect(failed.sourceRefs.some((source) => source.kind === 'user_answer')).toBe(false);
+    expect(failed.sourceRefs).toEqual(expect.arrayContaining([
+      expect.objectContaining({ kind: 'tool_result', text: expect.stringContaining('output failed') }),
+    ]));
+    expect(context.llmCalls).toHaveLength(1);
+    const output: string[] = [];
+    context.get(IEventBus).subscribe(CommandOutput, (event) => output.push(event.text));
+    await intent.command('--status');
+    expect(output.at(-1)).toContain('Analysis: failed (question_output_failed).');
+
+    await unlink(taskDir);
+    context.mockNextResponse({ type: 'function', id: 'retried-question', name: 'AskUserQuestion', arguments: args });
+    context.mockNextResponse({ type: 'text', text: 'The API will remain stable.' });
+    await intent.command('--continue');
+    await context.untilQuestion({ answers: { 'May the API change?': 'Keep it stable' } });
+    await loop.settled();
+    const resumed = intent.read().state.current!;
+    expect(resumed.analysis).toMatchObject({ id: failed.analysis!.id, status: 'analyzing', pendingQuestions: [] });
+    expect(resumed.analysis?.reason).toBeUndefined();
+    expect(resumed.analysis?.ledger).toHaveLength(3);
+    expect(resumed.analysis?.ledger[0]).toEqual(failed.analysis!.ledger[0]);
+    expect(resumed.sourceRefs.filter((source) => source.kind === 'user_answer')).toEqual([
+      expect.objectContaining({ id: 'tool:retried-question', text: 'Keep it stable' }),
+    ]);
+    expect(context.llmCalls).toHaveLength(3);
+    expect(JSON.stringify(context.llmCalls[2]?.history)).toContain('Keep it stable');
+    expect(JSON.stringify(loop.history())).toContain('The API will remain stable.');
   });
 
   it('runs read-only investigations against the parent request budget', async () => {

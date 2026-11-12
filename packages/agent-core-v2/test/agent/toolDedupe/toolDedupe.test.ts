@@ -206,6 +206,33 @@ async function runStep(
 }
 
 describe('AgentToolDedupeService', () => {
+  it('preserves output storage failures instead of restoring a cached successful result', async () => {
+    const h = createHarness();
+    const store = h.ix.get(IAgentTaskOutputService);
+    const output = store.open('storage-failure');
+    const close = output.close.bind(output);
+    vi.spyOn(output, 'close').mockImplementationOnce(async () => {
+      await close();
+      throw new Error('Output storage unavailable');
+    });
+    vi.spyOn(store, 'open').mockReturnValueOnce(output);
+    h.registry.register({ name: 'ExampleOutput', description: 'Write tool output',
+      parameters: { type: 'object', properties: {} },
+      resolveExecution: () => ({ approvalRule: 'ExampleOutput', execute: async (context) => {
+        context.write?.('Buffered output');
+        return { output: 'Original successful result' };
+      } }) });
+    await beforeStep(h, 1, 1);
+    const handler = h.executor.executor.execute(toolCall('failed-output', 'ExampleOutput', {}), { turnId: 1 });
+    const result = await handler.wait();
+    h.executor.release(handler.taskId);
+    expect(result.outcome).toMatchObject({ type: 'failed', error: {
+      type: 'output', phase: 'execute', reason: expect.stringContaining('Output storage unavailable'),
+    } });
+    expect(result.content).toEqual([{ type: 'text', text: expect.stringContaining('output failed') }]);
+    expect(JSON.stringify(result.content)).not.toContain('Original successful result');
+  });
+
   describe('same-step calls', () => {
     it('executes duplicate calls independently', async () => {
       const h = createHarness();

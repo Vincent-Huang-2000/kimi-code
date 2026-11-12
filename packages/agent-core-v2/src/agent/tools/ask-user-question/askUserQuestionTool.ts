@@ -196,7 +196,7 @@ export class AskUserQuestionTool implements IAskUserQuestionTool {
         };
       }
 
-      return dismissedQuestionResult();
+      throw error;
     }
   }
 
