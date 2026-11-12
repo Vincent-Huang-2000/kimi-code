@@ -41,7 +41,7 @@ export interface IEventDispatcher extends DurableRuntimeParticipantHost {
   dispatch(event: Event2<any>): Promise<void>;
   attachLate(participant: DurableAgentRuntimeParticipant): Promise<IDisposable>;
   restore(): Promise<void>;
-  flush(): Promise<void>;
+  flush(options?: { readonly strict?: boolean }): Promise<void>;
 }
 
 export const IEventDispatcher: ServiceIdentifier<IEventDispatcher> =

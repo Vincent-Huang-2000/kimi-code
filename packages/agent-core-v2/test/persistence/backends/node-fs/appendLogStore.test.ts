@@ -68,6 +68,22 @@ describe('AppendLogStore', () => {
     return out;
   }
 
+  it('strictly confirms partial-write recovery without appending the record twice', async () => {
+    const expected = new Error('partial append failed');
+    const realAppend = storage.append.bind(storage);
+    let fail = true;
+    storage.append = async (scope, key, data, options) => {
+      if (!fail) return realAppend(scope, key, data, options);
+      fail = false;
+      await realAppend(scope, key, data.subarray(0, 4), options);
+      throw expected;
+    };
+    record.append<Rec>(SCOPE, KEY, { n: 123456 });
+    await expect(record.flushLog(SCOPE, KEY, { strict: true })).rejects.toBe(expected);
+    await record.flushLog(SCOPE, KEY, { strict: true });
+    expect(await collect<Rec>(SCOPE, KEY)).toEqual([{ n: 123456 }]);
+  });
+
   it('reads nothing from an empty log', async () => {
     expect(await collect<Rec>(SCOPE, KEY)).toEqual([]);
   });

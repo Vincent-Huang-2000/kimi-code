@@ -22,7 +22,7 @@ export interface IWireService extends IAgentJournal {
   readHumanChain(): readonly WireLine[];
   readLoopChain(): readonly WireLine[];
   readHumanJournal(): readonly WireLine[];
-  flush(): Promise<void>;
+  flush(options?: { readonly strict?: boolean }): Promise<void>;
   drainPersisted(): Promise<void>;
   lineCount(): number;
   lastContextClearLine(): number | undefined;

@@ -994,8 +994,8 @@ export class EventDispatcherService extends Service implements IEventDispatcher 
     }
   }
 
-  async flush(): Promise<void> {
-    await this.wire.flush();
+  async flush(options?: { readonly strict?: boolean }): Promise<void> {
+    await this.wire.flush(options);
   }
 }
 

@@ -83,6 +83,7 @@ export class WireService extends Service implements IWireService, IAgentJournal 
     | undefined;
   private pendingRewrite: WireRecord[] | undefined;
   private persistError: Error | undefined;
+  private appendFailure: { readonly error: unknown } | undefined;
   private treeSnapshot: WireTree | undefined;
   private writeGeneration = 0;
   private lastReadLineCount = 0;
@@ -130,6 +131,7 @@ export class WireService extends Service implements IWireService, IAgentJournal 
       try {
         this.appendRecordLow(record);
       } catch (error) {
+        this.appendFailure ??= { error };
         this.logger.error('wire append failed', { agentId: this.agentId, error });
         onUnexpectedError(error);
       }
@@ -151,6 +153,7 @@ export class WireService extends Service implements IWireService, IAgentJournal 
         this.appendRecordLow(output);
       })
       .catch((error: unknown) => {
+        this.appendFailure ??= { error };
         this.logger.error('wire append failed', { agentId: this.agentId, error });
         onUnexpectedError(error);
       });
@@ -599,12 +602,13 @@ export class WireService extends Service implements IWireService, IAgentJournal 
     await this.persistQueue;
   }
 
-  async flush(): Promise<void> {
+  async flush(options?: { readonly strict?: boolean }): Promise<void> {
     await this.persistQueue;
+    if (options?.strict && this.appendFailure !== undefined) throw this.appendFailure.error;
     const persistError = this.persistError;
     this.persistError = undefined;
     if (persistError !== undefined) throw persistError;
-    await this.log.flushLog(this.wireScope, AGENT_WIRE_RECORD_KEY);
+    await this.log.flushLog(this.wireScope, AGENT_WIRE_RECORD_KEY, options);
   }
 
   private async rebuildRewriteRecords(

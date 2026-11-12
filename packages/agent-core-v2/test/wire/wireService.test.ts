@@ -1358,3 +1358,58 @@ describe('WireService readRestoreChains', () => {
     expect(await readRecords()).toEqual([envelope]);
   });
 });
+
+describe('WireService strict persistence confirmation', () => {
+  it('retains a dropped synchronous append failure across ordinary and strict flush calls', async () => {
+    const expected = new Error('append rejected');
+    const records: WireRecord[] = [];
+    const failing = recordingWireLog(records);
+    failing.append = () => { throw expected; };
+    const target = wireOverLog(failing, 'strict-append');
+    const unexpected: unknown[] = [];
+    setUnexpectedErrorHandler((error) => unexpected.push(error));
+    try {
+      target.appendRecord({ type: 'wire.test.missing', time: 1 });
+      await target.flush();
+      await expect(target.flush({ strict: true })).rejects.toBe(expected);
+      await expect(target.flush({ strict: true })).rejects.toBe(expected);
+      expect(records).toEqual([]);
+      expect(unexpected).toEqual([expected]);
+    } finally {
+      resetUnexpectedErrorHandler();
+    }
+  });
+
+  it('keeps a failed dehydrated record visible to strict callers while allowing ordinary appends', async () => {
+    const expected = new Error('dehydrate rejected');
+    const records: WireRecord[] = [];
+    const target = wireOverLog(recordingWireLog(records), 'strict-dehydrate');
+    setUnexpectedErrorHandler(() => {});
+    try {
+      target.appendRecord({ type: 'wire.test.missing', time: 1 }, async () => { throw expected; });
+      target.appendRecord({ type: 'wire.test.saved', time: 2 });
+      await target.flush();
+      expect(records).toEqual([{ type: 'wire.test.saved', time: 2 }]);
+      await expect(target.flush({ strict: true })).rejects.toBe(expected);
+      await expect(target.flush({ strict: true })).rejects.toBe(expected);
+    } finally {
+      resetUnexpectedErrorHandler();
+    }
+  });
+
+  it('propagates strict write-guard failures and confirms the pending records after retry', async () => {
+    let writable = false;
+    const guard = log.bindWriteGuard(testWireScope(SCOPE, KEY), AGENT_WIRE_RECORD_KEY, () => writable);
+    try {
+      wire.appendRecord({ type: 'wire.test.pending', time: 1 });
+      await wire.flush();
+      await expect(wire.flush({ strict: true })).rejects.toMatchObject({ code: 'storage.locked' });
+      writable = true;
+      await wire.flush({ strict: true });
+      expect(await readRecords()).toEqual([{ type: 'wire.test.pending', time: 1 }]);
+    } finally {
+      writable = true;
+      guard.dispose();
+    }
+  });
+});

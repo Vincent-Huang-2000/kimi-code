@@ -245,6 +245,13 @@ describe('EventDispatcherService', () => {
     expect(journal).toHaveLength(events.length);
   });
 
+  it('forwards strict persistence confirmation and its failure to callers', async () => {
+    const failure = new Error('persistence rejected');
+    const flush = vi.spyOn(ix.get(IWireService), 'flush').mockRejectedValue(failure);
+    await expect(dispatcher.flush({ strict: true })).rejects.toBe(failure);
+    expect(flush).toHaveBeenCalledWith({ strict: true });
+  });
+
   it('folds a durable event into state and appends the serialized record', async () => {
     await dispatcher.dispatch(new CounterAdd({ by: 3 }));
 

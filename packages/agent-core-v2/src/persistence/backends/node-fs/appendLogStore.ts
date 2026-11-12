@@ -297,9 +297,20 @@ export class AppendLogStore extends Disposable implements IAppendLogStore {
     });
   }
 
-  flushLog(scope: string, key: string): Promise<void> {
+  async flushLog(
+    scope: string,
+    key: string,
+    options?: { readonly strict?: boolean },
+  ): Promise<void> {
     const state = this.state(scope, key);
-    return this.flushState(scope, key, state);
+    await this.flushState(scope, key, state);
+    if (options?.strict && state.pending.length > 0) {
+      throw new StorageError(
+        StorageErrors.codes.STORAGE_LOCKED,
+        'Append log writes remain unpersisted because the write guard declined',
+        { details: { scope, key, pending: state.pending.length } },
+      );
+    }
   }
 
   private flushState(scope: string, key: string, state: LogState): Promise<void> {
