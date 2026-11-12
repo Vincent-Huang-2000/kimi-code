@@ -108,6 +108,56 @@ describe('Intent runtime', () => {
     expect(result[0]?.result.isError).toBe(true);
     expect(execute).not.toHaveBeenCalled();
   });
+
+  it.each([
+    ['kind', { kind: undefined }, "must have required property 'kind'"],
+    ['certainty', { certainty: undefined }, "must have required property 'certainty'"],
+    ['scope', { scope: undefined }, "must have required property 'scope'"],
+    ['kind value', { kind: 'requirement' }, '/update/items/0/kind must be equal to one of the allowed values'],
+  ])('preserves Intent validation errors for invalid %s and accepts a corrected update', async (_field, invalidItem, error) => {
+    const { context, loop, intent } = await setup();
+    await prompt(context, loop, 'Keep the API stable.');
+    const before = intent.read();
+    const task = before.state.current!;
+    const item = { id: 'goal', kind: 'goal', text: 'Keep the API stable.', certainty: 'explicit', scope: 'task',
+      sources: [{ sourceId: task.sourceRefs[0]!.id, quote: task.sourceRefs[0]!.text }], status: 'active' };
+    const update = { operationId: 'review', intentId: task.intentId, generation: before.generation,
+      expectedRevision: task.revision, handledInputs: task.observedInputs, reviewReason: 'Preserve the API.', items: [item] };
+    const executor = context.get(IAgentToolExecutorService);
+    const invalid = executor.executor.execute({ id: 'invalid-intent', type: 'function', name: 'Intent',
+      arguments: JSON.stringify({ update: { ...update, items: [{ ...item, ...invalidItem }] } }) }, { turnId: 1 });
+    const failure = await invalid.wait();
+    executor.release(invalid.taskId);
+    expect(invalid.snapshot().prepared).toBeUndefined();
+    expect(failure.outcome).toMatchObject({ type: 'failed', error: { phase: 'validate', reason: expect.stringContaining(error) } });
+    expect(failure.content).toEqual([{ type: 'text', text: expect.stringContaining(error) }]);
+    expect(intent.read()).toEqual(before);
+
+    const corrected = executor.executor.execute({ id: 'corrected-intent', type: 'function', name: 'Intent',
+      arguments: JSON.stringify({ update }) }, { turnId: 1 });
+    const success = await corrected.wait();
+    executor.release(corrected.taskId);
+    expect(success.outcome.type).toBe('success');
+    expect(intent.read().state.current).toMatchObject({ revision: task.revision + 1, items: [item], handledInputs: task.observedInputs });
+  });
+
+  it.each([
+    ['parse', 'Intent', '{"update":', 'Invalid args for tool "Intent"'],
+    ['resolve', 'ExampleUnresolvable', '{}', 'Cannot prepare the tool'],
+  ])('preserves %s failures before tool preparation with Intent enabled', async (phase, name, args, error) => {
+    const { context, loop } = await setup();
+    await prompt(context, loop, 'Keep the API stable.');
+    context.get(IAgentToolRegistryService).register({ name: 'ExampleUnresolvable', description: 'fail to prepare',
+      parameters: { type: 'object', properties: {} }, resolveExecution: () => { throw new Error('Cannot prepare the tool'); } });
+    const executor = context.get(IAgentToolExecutorService);
+    const handler = executor.executor.execute({ id: 'unprepared', type: 'function', name, arguments: args }, { turnId: 1 });
+    const result = await handler.wait();
+    executor.release(handler.taskId);
+    expect(handler.snapshot().prepared).toBeUndefined();
+    expect(result.outcome).toMatchObject({ type: 'failed', error: { phase, reason: expect.stringContaining(error) } });
+    expect(result.content).toEqual([{ type: 'text', text: expect.stringContaining(error) }]);
+  });
+
   it('publishes status without a model call, including an empty session', async () => {
     const { context, intent } = await setup();
     const output: string[] = [];

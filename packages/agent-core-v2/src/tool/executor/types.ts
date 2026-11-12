@@ -159,7 +159,7 @@ export interface ToolStoppingContext<TFields extends object = object, TPrepared 
 }
 
 export interface AfterExecuteHookContext<TArgs = unknown, TContext = unknown, TPrepared = unknown>
-  extends ToolDecisionContext<TArgs, TContext, TPrepared> {
+  extends ToolDecisionContext<TArgs, TContext, TPrepared | undefined> {
   readonly fields: Readonly<Record<string, unknown>>;
   result: ToolResult;
   set(fields: Record<string, unknown>): void;

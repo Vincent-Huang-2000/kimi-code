@@ -220,7 +220,7 @@ export class AgentIntentService extends Service implements IIntentService {
           });
         }
         const files = context.call.name === 'Read' && context.result.outcome.type === 'success' &&
-          context.prepared.kind === 'execute' && this.isBuiltinTool('Read')
+          context.prepared?.kind === 'execute' && this.isBuiltinTool('Read')
           ? await this.captureEvidence((context.prepared.accesses ?? []).flatMap((access) =>
             access.kind === 'file' && access.operation === 'read' && access.recursive !== true ? [access.path] : []))
           : undefined;
@@ -228,7 +228,7 @@ export class AgentIntentService extends Service implements IIntentService {
           id: `tool:${context.call.id}`, kind, text: sourceText.slice(0, 32000),
           relatedRunId: question?.runId, generation: this.generation, files,
         });
-        if (context.prepared.kind === 'execute') {
+        if (context.prepared?.kind === 'execute') {
           const writes = context.prepared.accesses?.filter((access) => access.kind === 'all' ||
             access.operation === 'write' || access.operation === 'readwrite') ?? [];
           if (writes.length > 0) await this.invalidateFindings(writes.map((access) => access.kind === 'all' ? '*' : access.path));
