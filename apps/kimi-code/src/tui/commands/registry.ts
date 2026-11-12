@@ -26,6 +26,12 @@ const SWARM_ARG_COMPLETIONS: readonly ArgCompletionSpec[] = [
   { value: 'off', description: 'Turn swarm mode off' },
 ];
 
+const DEEP_ARG_COMPLETIONS: readonly ArgCompletionSpec[] = [
+  { value: '--status', description: 'Show the current intent and analysis status' },
+  { value: '--cancel', description: 'Cancel the current deep analysis' },
+  { value: '--continue', description: 'Continue interrupted analysis with its remaining budget' },
+];
+
 const TOWER_ARG_COMPLETIONS: readonly ArgCompletionSpec[] = [
   { value: 'status', description: 'Report tower status' },
   { value: 'teardown', description: 'Tear down the tower' },
@@ -144,6 +150,10 @@ function formatDirectoryCompletionValue(argumentPrefix: string, parentInput: str
   return `${join(parentInput, entryName)}/`;
 }
 
+export function deepArgumentCompletions(argumentPrefix: string): AutocompleteItem[] | null {
+  return completeLeadingArg(DEEP_ARG_COMPLETIONS, argumentPrefix);
+}
+
 export const BUILTIN_SLASH_COMMANDS = [
   {
     name: 'yolo',
@@ -179,6 +189,16 @@ export const BUILTIN_SLASH_COMMANDS = [
     description: 'Toggle plan mode',
     priority: 100,
     availability: (args) => (args.trim().toLowerCase() === 'clear' ? 'idle-only' : 'always'),
+  },
+  {
+    name: 'deep',
+    aliases: [],
+    description: 'Analyze the current task before implementation',
+    priority: 100,
+    argumentHint: '[<task>|--status|--cancel|--continue]',
+    completeArgs: deepArgumentCompletions,
+    availability: (args) => ['--status', '--cancel'].includes(args.trim()) ? 'always' : 'idle-only',
+    experimentalFlag: 'intent_engine',
   },
   {
     name: 'swarm',

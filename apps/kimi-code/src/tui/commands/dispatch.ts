@@ -28,6 +28,7 @@ import { handleLoginCommand, handleLogoutCommand } from './auth';
 import { handleBtwCommand } from './btw';
 import { handleCopyCommand } from './copy';
 import { handleDesktopCommand } from './desktop';
+import { handleDeepCommand } from './deep';
 import {
   handleCompactCommand,
   handleEditorCommand,
@@ -363,6 +364,7 @@ async function ensureSessionForCommand(host: SlashCommandHost): Promise<Session 
 const SESSION_REQUIRING_COMMANDS: ReadonlySet<BuiltinSlashCommandName> = new Set([
   'btw',
   'compact',
+  'deep',
   'export-debug-zip',
   'export-md',
   'fork',
@@ -523,6 +525,9 @@ async function handleBuiltInSlashCommand(
       return;
     case 'auto':
       showPermissionPicker(host, 'auto');
+      return;
+    case 'deep':
+      await handleDeepCommand(host, args, input);
       return;
     case 'plan':
       await handlePlanCommand(host, args);

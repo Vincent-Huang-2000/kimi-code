@@ -324,6 +324,7 @@ export class SessionEventHandler {
       case 'shell.output': this.host.handleShellOutput(event); break;
       case 'shell.started': this.host.handleShellStarted(event); break;
       case 'assistant.delta': this.handleAssistantDelta(event); break;
+      case 'command.output': this.host.showNotice(event.text); break;
       case 'hook.result': this.handleHookResult(event); break;
       case 'thinking.delta': this.handleThinkingDelta(event); break;
       case 'tool.call.started': this.handleToolCall(event); break;

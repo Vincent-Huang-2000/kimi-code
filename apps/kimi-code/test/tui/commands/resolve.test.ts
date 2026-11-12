@@ -235,6 +235,19 @@ describe('resolveSlashCommandInput', () => {
     });
   });
 
+  it('preserves disabled deep behavior and dispatches enabled deep without queuing', () => {
+    expect(resolve('/deep investigate checkout')).toEqual({ kind: 'message', input: '/deep investigate checkout' });
+    setExperimentalFeatures([{ id: 'intent_engine', enabled: true }]);
+    expect(resolve('/deep investigate checkout')).toMatchObject({ kind: 'builtin', name: 'deep', args: 'investigate checkout' });
+    for (const input of ['/deep', '/deep investigate checkout', '/deep --continue']) {
+      expect(resolve(input, { isStreaming: true })).toEqual({ kind: 'blocked', commandName: 'deep', reason: 'streaming' });
+      expect(resolve(input, { isCompacting: true })).toEqual({ kind: 'blocked', commandName: 'deep', reason: 'compacting' });
+    }
+    for (const args of ['--status', '--cancel']) {
+      expect(resolve('/deep ' + args, { isStreaming: true })).toMatchObject({ kind: 'builtin', name: 'deep', args });
+    }
+  });
+
   it('resolves /remote-control and /rc as built-ins', () => {
     expect(resolve('/rc')).toMatchObject({ kind: 'builtin', name: 'remote-control' });
     expect(resolve('/remote-control')).toMatchObject({ kind: 'builtin', name: 'remote-control' });

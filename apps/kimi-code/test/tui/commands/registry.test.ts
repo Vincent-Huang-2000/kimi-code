@@ -4,6 +4,7 @@ import {
   parseSlashInput,
   resolveSlashCommandAvailability,
   addDirArgumentCompletions,
+  deepArgumentCompletions,
   sortSlashCommands,
   swarmArgumentCompletions,
   towerArgumentCompletions,
@@ -49,6 +50,19 @@ describe('built-in slash command registry', () => {
     expect(resolveSlashCommandAvailability(plan!, '')).toBe('always');
     expect(resolveSlashCommandAvailability(plan!, 'on')).toBe('always');
     expect(resolveSlashCommandAvailability(plan!, 'clear')).toBe('idle-only');
+  });
+
+  it('gates deep analysis and keeps only status and cancellation available while busy', () => {
+    const deep = findBuiltInSlashCommand('deep')!;
+    expect((deep as KimiSlashCommand).experimentalFlag).toBe('intent_engine');
+    for (const args of ['', 'Investigate checkout', '--continue', '--cancel extra']) {
+      expect(resolveSlashCommandAvailability(deep, args)).toBe('idle-only');
+    }
+    for (const args of ['--status', '--cancel']) {
+      expect(resolveSlashCommandAvailability(deep, args)).toBe('always');
+    }
+    expect(deepArgumentCompletions('--c')?.map((item) => item.value)).toEqual(['--cancel', '--continue']);
+    expect(deepArgumentCompletions('Investigate checkout')).toBeNull();
   });
 
   it('keeps swarm mode changes and swarm tasks idle-only', () => {

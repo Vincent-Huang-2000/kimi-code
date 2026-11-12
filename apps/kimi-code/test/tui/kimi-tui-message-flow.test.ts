@@ -3520,6 +3520,18 @@ command = "vim"
     expect(harness.track).not.toHaveBeenCalledWith('feedback_submitted', undefined);
   });
 
+  it('shows command output immediately without changing turn state or editor input', async () => {
+    const { driver } = await makeDriver(makeSession());
+    driver.state.editor.setText('next request');
+    driver.sessionEventHandler.handleEvent({
+      type: 'command.output', agentId: 'main', sessionId: 'ses-1',
+      command: 'deep', text: 'Deep analysis interrupted: budget exhausted.',
+    }, () => {});
+    expect(stripSgr(renderTranscript(driver))).toContain('Deep analysis interrupted: budget exhausted.');
+    expect(driver.state.appState.streamingPhase).toBe('idle');
+    expect(driver.state.editor.getText()).toBe('next request');
+  });
+
   it('tracks blocked slash commands as invalid without counting them as executed commands', async () => {
     const { driver, harness } = await makeDriver();
     driver.state.appState.streamingPhase = 'waiting';
