@@ -26,7 +26,7 @@
 // cross-reducers), blobs (the folding states whose blob codec offloads inline
 // media to blob storage), owner (the source file declaring the class).
 
-// Index (67 record types)
+// Index (68 record types)
 //   changeNotifier.snapshot            changeNotifier.snapshot                                    src/agent/changeNotifier/changeNotifierOps.ts
 //   config.update                      (none)                                                     src/agent/profile/profileOps.ts
 //   context.append_loop_event          changeNotifier.snapshot, interruptionReminder, plan, turn  src/agent/contextMemory/contextEvents.ts
@@ -47,6 +47,7 @@
 //   goal.clear                         (none)                                                     src/features/goal/goalOps.ts
 //   goal.create                        (none)                                                     src/features/goal/goalOps.ts
 //   goal.update                        (none)                                                     src/features/goal/goalOps.ts
+//   intent.committed                   (none)                                                     src/features/intent/intentOps.ts
 //   interaction.request                (none)                                                     src/agent/interaction/interactionOps.ts
 //   interaction.resolved               (none)                                                     src/agent/interaction/interactionOps.ts
 //   interruptionReminder.recorded      interruptionReminder                                       src/agent/interruptionReminder/interruptionReminderOps.ts
@@ -368,6 +369,16 @@ interface GoalUpdatePayload {
     wallClockBudgetMs?: number;
   };
   actor?: 'user' | 'model' | 'runtime' | 'system';
+}
+
+/**
+ * states: (none)
+ * owner: src/features/intent/intentOps.ts
+ */
+interface IntentCommittedPayload {
+  _name: 'intent.committed';
+  agentId: string;
+  state: any;
 }
 
 /**
@@ -1015,6 +1026,7 @@ interface WirePayloadMap {
   "goal.clear": GoalClearPayload;
   "goal.create": GoalCreatePayload;
   "goal.update": GoalUpdatePayload;
+  "intent.committed": IntentCommittedPayload;
   "interaction.request": InteractionRequestPayload;
   "interaction.resolved": InteractionResolvedPayload;
   "interruptionReminder.recorded": InterruptionReminderRecordedPayload;

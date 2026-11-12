@@ -9,6 +9,11 @@ describe('Event public types', () => {
     expectTypeOf<EventByType<'assistant.delta'>['delta']>().toEqualTypeOf<string>();
   });
 
+  it('narrows command output independently of model turns', () => {
+    expectTypeOf<EventByType<'command.output'>['command']>().toEqualTypeOf<string>();
+    expectTypeOf<EventByType<'command.output'>['text']>().toEqualTypeOf<string>();
+  });
+
   it('narrows hook results by type', () => {
     expectTypeOf<EventByType<'hook.result'>['hookEvent']>().toEqualTypeOf<string>();
     expectTypeOf<EventByType<'hook.result'>['content']>().toEqualTypeOf<string>();
@@ -106,6 +111,7 @@ describe('Event public types', () => {
         case 'turn.step.completed':
         case 'turn.step.retrying':
         case 'turn.step.interrupted':
+        case 'command.output':
         case 'assistant.delta':
         case 'hook.result':
         case 'thinking.delta':

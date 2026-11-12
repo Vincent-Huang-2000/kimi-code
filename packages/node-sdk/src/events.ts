@@ -8,6 +8,7 @@ import type {
 export type { KimiErrorPayload } from '#/errors';
 
 export type { Event, ToolResultEvent } from '@moonshot-ai/agent-core-v2/events';
+export type { CommandOutputEvent } from '@moonshot-ai/agent-core-v2/agent/command/commandEvents';
 
 export { MCP_OAUTH_AUTHORIZATION_URL_TOOL_UPDATE } from '@moonshot-ai/agent-core-v2/tool/toolContract';
 

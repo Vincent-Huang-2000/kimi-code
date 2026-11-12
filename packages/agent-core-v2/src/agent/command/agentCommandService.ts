@@ -29,6 +29,7 @@ export class AgentCommandService extends Service implements IAgentCommandService
   list(): readonly AgentCommandInfo[] {
     const byName = new Map<string, AgentCommandInfo>();
     for (const record of this.contributions.records) {
+      if (record.value.when !== undefined && !this.instantiationService.invokeFunction(record.value.when)) continue;
       byName.set(record.value.name, {
         name: record.value.name,
         description: record.value.description,
@@ -51,7 +52,7 @@ export class AgentCommandService extends Service implements IAgentCommandService
   private find(name: string): CollectionRecord<CommandContribution> | undefined {
     let found: CollectionRecord<CommandContribution> | undefined;
     for (const record of this.contributions.records) {
-      if (record.value.name === name) found = record;
+      if (record.value.name === name && (record.value.when === undefined || this.instantiationService.invokeFunction(record.value.when))) found = record;
     }
     return found;
   }

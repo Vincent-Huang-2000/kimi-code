@@ -23,6 +23,7 @@ import type { SessionMetaUpdatedEvent } from '#/session/sessionMetadata/sessionM
 import type { SubagentCancelledEvent, SubagentCompletedEvent, SubagentFailedEvent, SubagentSpawnedEvent, SubagentStartedEvent } from '#/session/subagent/mirrorAgentRun';
 
 import type { ErrorEvent, WarningEvent } from './errors';
+import type { CommandOutputEvent } from '#/agent/command/commandEvents';
 
 export interface ToolResultEvent extends Omit<ToolResultEventPayload, 'agentId'> {
   readonly type: 'tool.result';
@@ -31,6 +32,7 @@ export interface ToolResultEvent extends Omit<ToolResultEventPayload, 'agentId'>
 export type AgentEvent =
   | ErrorEvent
   | WarningEvent
+  | CommandOutputEvent
   | AgentStatusUpdatedEvent
   | SessionMetaUpdatedEvent
   | SessionCreatedEvent

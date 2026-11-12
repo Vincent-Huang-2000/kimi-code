@@ -1,5 +1,5 @@
 import { collection } from '#/_base/di/collection';
-import type { ServiceIdentifier } from '#/_base/di/instantiation';
+import type { ServiceIdentifier, ServicesAccessor } from '#/_base/di/instantiation';
 
 export interface CommandRunContext {
   readonly args: string;
@@ -9,6 +9,7 @@ export interface CommandRunContext {
 export interface CommandContribution {
   readonly name: string;
   readonly description?: string;
+  readonly when?: (accessor: ServicesAccessor) => boolean;
   readonly run: (ctx: CommandRunContext) => void | Promise<void>;
 }
 

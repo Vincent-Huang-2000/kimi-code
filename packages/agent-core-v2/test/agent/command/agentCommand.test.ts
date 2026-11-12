@@ -43,6 +43,7 @@ describe('AgentCommandService — CommandContribution fold', () => {
     contributions: ReadonlyArray<{
       readonly name: string;
       readonly description?: string;
+      readonly when?: CommandContribution['when'];
       readonly run: (ctx: CommandRunContext) => void | Promise<void>;
     }>,
   ) {
@@ -120,6 +121,38 @@ describe('AgentCommandService — CommandContribution fold', () => {
     expect(commands.list()).toHaveLength(1);
     await commands.run('dup');
     expect(calls).toEqual(['second']);
+    host.dispose();
+  });
+
+  it('rechecks conditional command availability on list and run', async () => {
+    let enabled = false;
+    const calls: string[] = [];
+    const { host, commands } = hostWithProvider([{
+      name: 'deep',
+      when: (accessor) => enabled && accessor.get(IEcho).value === 'echo!',
+      run: () => { calls.push('deep'); },
+    }]);
+    expect(commands.list()).toEqual([]);
+    await expect(commands.run('deep')).rejects.toMatchObject({ code: ErrorCodes.REQUEST_INVALID });
+    enabled = true;
+    expect(commands.list().map((command) => command.name)).toEqual(['deep']);
+    await commands.run('deep');
+    enabled = false;
+    expect(commands.list()).toEqual([]);
+    await expect(commands.run('deep')).rejects.toMatchObject({ code: ErrorCodes.REQUEST_INVALID });
+    expect(calls).toEqual(['deep']);
+    host.dispose();
+  });
+
+  it('does not let an unavailable override shadow an available command', async () => {
+    const calls: string[] = [];
+    const { host, commands } = hostWithProvider([
+      { name: 'same', description: 'available', run: () => { calls.push('available'); } },
+      { name: 'same', description: 'hidden', when: () => false, run: () => { calls.push('hidden'); } },
+    ]);
+    expect(commands.list()).toMatchObject([{ name: 'same', description: 'available' }]);
+    await commands.run('same');
+    expect(calls).toEqual(['available']);
     host.dispose();
   });
 

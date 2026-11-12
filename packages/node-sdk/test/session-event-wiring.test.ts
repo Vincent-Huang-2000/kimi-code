@@ -115,6 +115,21 @@ function bindStatusServices(agent: FakeAgentHandle, model: string): void {
 // ---------------------------------------------------------------------------
 
 describe('SessionEventWiring status snapshot fold', () => {
+  it('delivers command text without a model turn or assistant stream', () => {
+    const agent = new FakeAgentHandle('main');
+    const { sink, events } = collectingSink();
+    const wiring = new SessionEventWiring(makeSession([agent]), sink);
+    try {
+      agent.bus.emit({ type: 'command.output', command: 'deep', text: 'No current task.', time: 123 });
+    } finally {
+      wiring.dispose();
+    }
+    expect(events).toEqual([{
+      type: 'command.output', command: 'deep', text: 'No current task.', time: 123,
+      sessionId: 's1', agentId: 'main',
+    }]);
+  });
+
   it('folds a consistent usage + context + model snapshot into every status event', () => {
     const sub = new FakeAgentHandle('agent-1');
     bindStatusServices(sub, 'sub-model');

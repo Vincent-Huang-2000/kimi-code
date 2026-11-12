@@ -172,6 +172,41 @@ async function findSessionDir(homeDir: string, sessionId: string): Promise<strin
 }
 
 describe('SDKRpcClientV2 (agent-core-v2 wiring)', () => {
+  it.each([false, true])('exposes deep commands only when enabled and delivers fresh-session status (%s)', async (enabled) => {
+    vi.stubEnv('KIMI_CODE_EXPERIMENTAL_FLAG', '0');
+    vi.stubEnv('KIMI_CODE_EXPERIMENTAL_INTENT_ENGINE', enabled ? '1' : '0');
+    const { harness } = await makeHarness();
+    const workDir = await mkdtemp(join(tmpdir(), 'kimi-sdk-deep-'));
+    tempDirs.push(workDir);
+    try {
+      const session = await harness.createSession({ workDir });
+      const events: Event[] = [];
+      const unsubscribe = session.onEvent((event) => events.push(event));
+      try {
+        const commands = await session.listCommands();
+        expect(commands.some((command) => command.name === 'deep')).toBe(enabled);
+        if (!enabled) {
+          await expect(session.runCommand('deep', '--status')).rejects.toThrow('Unknown command');
+          expect(events.some((event) => event.type === 'command.output')).toBe(false);
+          return;
+        }
+        await expect(session.runCommand('deep', '--status')).resolves.toBeUndefined();
+        await vi.waitFor(() => {
+          expect(events).toContainEqual(expect.objectContaining({
+            type: 'command.output', command: 'deep', text: 'No current task.', agentId: 'main',
+          }));
+        });
+        expect(events.some((event) => event.type === 'turn.started')).toBe(false);
+        await expect(session.runCommand('deep')).rejects.toThrow('no_task');
+      } finally {
+        unsubscribe();
+      }
+    } finally {
+      await harness.close();
+      vi.unstubAllEnvs();
+    }
+  });
+
   it('forwards process-stop authorization through harness and session capability installs', async () => {
     const status = {
       id: 'kimi-cu' as const,
