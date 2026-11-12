@@ -20,7 +20,6 @@ function state(): IntentState {
   current.sourceRefs.push(
     { id: 'tool-1', kind: 'tool_result', text: 'All tests passed.' },
     { id: 'child-1', kind: 'subagent_finding', text: 'The current export is supported.' },
-    { id: 'inference-1', kind: 'model_inference', text: 'A cache might help.' },
   );
   return { ...emptyIntentState(), current };
 }
@@ -68,7 +67,7 @@ describe('Intent state and update policy', () => {
     expect(() => IntentStateSchema.parse({ ...state(), schemaVersion: 2 })).toThrow();
   });
 
-  it.each(['tool-1', 'child-1', 'inference-1'])('does not treat %s as user confirmation', (sourceId) => {
+  it.each(['tool-1', 'child-1'])('does not treat %s as user confirmation', (sourceId) => {
     const current = state();
     const source = current.current!.sourceRefs.find((entry) => entry.id === sourceId)!;
     expect(() => applyIntentUpdate(current, update(current, {
@@ -116,14 +115,6 @@ describe('Intent state and update policy', () => {
       }), 'view-1', 'task-2')).toThrow('invalid_source');
     },
   );
-
-  it('does not upgrade a model inference into a fact', () => {
-    const current = state();
-    expect(() => applyIntentUpdate(current, update(current, {
-      items: [item({ certainty: 'fact',
-        sources: [{ sourceId: 'inference-1', quote: 'A cache might help.' }] })],
-    }), 'view-1', 'task-2')).toThrow('Inference is not a code fact');
-  });
 
   it('preserves the replaced requirement and its source', () => {
     const current = state();

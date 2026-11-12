@@ -95,10 +95,6 @@ export function applyIntentUpdate(state: IntentState, input: IntentUpdate, gener
     if (item.kind === 'unknown' && item.certainty !== 'unknown') {
       throw new IntentError('invalid_transition', 'Resolve or supersede an unknown explicitly.');
     }
-    if (item.certainty === 'fact' && item.sources.some((ref) =>
-      task.sourceRefs.find((source) => source.id === ref.sourceId)?.kind === 'model_inference')) {
-      throw new IntentError('invalid_source', 'Inference is not a code fact.');
-    }
     if (item.kind !== 'acceptance' && (item.verification !== undefined || item.evidence !== undefined)) {
       throw new IntentError('invalid_transition', 'Only acceptance criteria may carry verification results.');
     }

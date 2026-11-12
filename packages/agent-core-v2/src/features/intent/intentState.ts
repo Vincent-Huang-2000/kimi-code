@@ -8,7 +8,7 @@ export const IntentFileEvidenceSchema = z.object({
 });
 export const IntentSourceSchema = z.object({
   id,
-  kind: z.enum(['user_input', 'user_answer', 'tool_result', 'subagent_finding', 'model_inference']),
+  kind: z.enum(['user_input', 'user_answer', 'tool_result', 'subagent_finding']),
   text: z.string().max(32000),
   files: z.array(IntentFileEvidenceSchema).max(30).optional(),
   relatedRunId: id.optional(),
