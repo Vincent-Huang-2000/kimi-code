@@ -19,7 +19,7 @@ import type { AgentTaskInfo } from '@moonshot-ai/agent-core-v2/agent/task/types'
 import { AgentStateService } from '@moonshot-ai/agent-core-v2/agent/state/agentStateService';
 import { ToolUpdated } from '@moonshot-ai/agent-core-v2/agent/toolExecutor/toolExecutorEvents';
 import { EventBusService } from '@moonshot-ai/agent-core-v2/app/event/eventBusService';
-import type { ContentPart } from '@moonshot-ai/agent-core-v2/human/llm/message';
+import type { ContentPart } from '@moonshot-ai/core/llm/message';
 import { EventDispatcherService } from '@moonshot-ai/agent-core-v2/state/eventDispatcherService';
 import type { WireRecord } from '@moonshot-ai/agent-core-v2/wire/record';
 import type { IWireService } from '@moonshot-ai/agent-core-v2/wire/wire';
@@ -716,6 +716,28 @@ describe('conversation fold', () => {
     expect(state.turns[0]?.items[1]).toMatchObject({ item_id: 'Bash_0', outcome: 'failed' });
   });
 
+  it('replaces the partial reply of a failed attempt with the attempt that retries its step', () => {
+    const failedAttempt = [
+      turnPrompt(0, 'p1'),
+      userMessage('p1', 'Which regions?'),
+      stepBegin(0, 1, 's1'),
+      contentPart(0, 1, 's1', { type: 'text', text: 'Affected: eu-west ' }, 0),
+      stepEnd(0, 1, 's1', { finishReason: 'error' }),
+    ];
+
+    const retried = fold([
+      ...failedAttempt,
+      stepBegin(0, 1, 's2'),
+      contentPart(0, 1, 's2', { type: 'text', text: 'Affected regions are eu-west and us-east.' }, 0),
+      stepEnd(0, 1, 's2', { finishReason: 'end_turn' }),
+      turnEnded(0, 'completed'),
+    ]);
+    const exhausted = fold([...failedAttempt, turnEnded(0, 'failed', { error: { name: 'APIConnectionError', message: 'terminated' } })]);
+
+    expect(shape(retried.turns[0])).toEqual(['opener:Which regions?', 'assistant_message:Affected regions are eu-west and us-east.']);
+    expect(shape(exhausted.turns[0])).toEqual(['opener:Which regions?', 'assistant_message:Affected: eu-west ']);
+  });
+
   it('keeps the note of a tool result beside its output', () => {
     const note = 'Read image file. Mime type: image/png. Size: 1234 bytes. Original dimensions: 640x480 pixels.';
     const state = fold([
@@ -878,6 +900,17 @@ describe('orphan turns', () => {
 
     expect(settled.turns[0]).toMatchObject({ status: 'ended', outcome: 'completed' });
   });
+
+  it('ends a crashed first turn from the modern engine (carrying trigger) as interrupted', () => {
+    const modernFirstTurn: WireRecord[] = [
+      record('turn.prompt', { turnId: 0, promptId: 'p1', origin: { kind: 'user' }, input: [], trigger: 'normal' }),
+      userMessage('p1', 'first turn crash'),
+      stepBegin(0, 1, 's0'),
+    ];
+    const settled = settleOrphanTurns(fold(modernFirstTurn));
+
+    expect(settled.turns[0]).toMatchObject({ status: 'ended', outcome: 'interrupted', end_reason: 'aborted' });
+  });
 });
 
 const passThroughBlobs = {
@@ -979,6 +1012,7 @@ const updated = (
   output?: { offset: number; text: string },
 ): ToolUpdated => new ToolUpdated({
   agentId: 'main',
+  origin: 'loop',
   turnId: 0,
   toolCallId: 'call-1',
   taskId: 'task-1',
@@ -1134,6 +1168,25 @@ describe('conversation feed', () => {
     h.dispatcher.dispose();
   });
 
+  it('removes the reply a failed attempt streamed once a retry of its step begins', async () => {
+    const h = feedHarness([]);
+    await runningTurn(h);
+
+    await h.dispatcher.dispatch(new AssistantDelta({ agentId: 'main', turnId: 0, block: 0, delta: 'Affected: eu-west ' }));
+    await h.dispatcher.dispatch(loopEvent({ type: 'content.part', turnId: '0', step: 1, stepUuid: 's1', block: 0, part: { type: 'text', text: 'Affected: eu-west ' } }));
+    await h.dispatcher.dispatch(loopEvent({ type: 'step.end', uuid: 's1', turnId: '0', step: 1, finishReason: 'error' }));
+    await h.dispatcher.dispatch(loopEvent({ type: 'step.begin', uuid: 's2', turnId: '0', step: 1 }));
+    await h.dispatcher.dispatch(new AssistantDelta({ agentId: 'main', turnId: 0, block: 0, delta: 'Affected regions are eu-west and us-east.' }));
+    await flushed();
+
+    expect(h.events.flatMap((event) => {
+      if (event.type === 'item.started' || event.type === 'item.ended') return [`${event.type}:${event.item.item_id}`];
+      return event.type === 'item.removed' ? [`${event.type}:${event.item_id}`] : [];
+    })).toEqual(['item.started:s1:0', 'item.ended:s1:0', 'item.removed:s1:0', 'item.started:s2:0']);
+    expect((await h.feed.page(undefined, 20)).turns[0]?.items.map((item) => item.item_id)).toEqual(['p1', 's2:0']);
+    h.dispatcher.dispose();
+  });
+
   it('announces the task a running tool call starts', async () => {
     const h = feedHarness([]);
     await runningTurn(h);
@@ -1241,5 +1294,97 @@ describe('conversation feed', () => {
     await huge.feed.ready;
     expect(await huge.feed.page(undefined, 10)).toMatchObject({ turns: [{ ordinal: 0 }], has_more: false });
     huge.dispatcher.dispose();
+  });
+
+  it('does not mark a failed notification-opened turn as a trailing rejected prompt', () => {
+    const state = fold([
+      turnPrompt(0, 'notif-p1', { kind: 'background_task', taskId: 'bg-1' }),
+      userMessage('notif-p1', notificationXml('bg-1'), { kind: 'background_task', taskId: 'bg-1' }),
+      turnEnded(0, 'failed'),
+      record('prompt.completed', { promptId: 'notif-p1', reason: 'failed' }),
+    ]);
+    expect(state.trailingRejectedPrompt).toBe(false);
+    expect(state.turns[0]).toMatchObject({ status: 'ended', outcome: 'failed' });
+
+    const rejected = fold([
+      turnPrompt(0, 'p1'),
+      userMessage('p1', 'work'),
+      turnEnded(0, 'failed'),
+      record('prompt.completed', { promptId: 'p2', reason: 'blocked' }),
+    ]);
+    expect(rejected.trailingRejectedPrompt).toBe(true);
+  });
+
+  it('keeps a failed continuation turn continuable while rejecting subsequent failed submissions', () => {
+    const continuedFailed = fold([
+      turnPrompt(0, 'p1'),
+      userMessage('p1', 'work'),
+      turnEnded(0, 'cancelled'),
+      record('turn.prompt', {
+        turnId: 1,
+        promptId: undefined,
+        origin: { kind: 'injection', variant: 'turn_continue', ownerPromptId: 'p1' },
+        input: [],
+        trigger: 'continue',
+      }),
+      loop({ type: 'step.begin', uuid: 'step-c1', turnId: '1', step: 1 }),
+      turnEnded(1, 'failed'),
+      record('prompt.completed', { promptId: 'generated-waiter-1', reason: 'failed' }),
+    ]);
+    expect(continuedFailed.trailingRejectedPrompt).toBe(false);
+    expect(continuedFailed.turns.at(-1)).toMatchObject({ status: 'ended', outcome: 'failed' });
+
+    const subsequentGateFailure = fold([
+      turnPrompt(0, 'p1'),
+      userMessage('p1', 'work'),
+      turnEnded(0, 'cancelled'),
+      record('turn.prompt', {
+        turnId: 1,
+        promptId: undefined,
+        origin: { kind: 'injection', variant: 'turn_continue', ownerPromptId: 'p1' },
+        input: [],
+        trigger: 'continue',
+      }),
+      loop({ type: 'step.begin', uuid: 'step-c1', turnId: '1', step: 1 }),
+      turnEnded(1, 'failed'),
+      record('prompt.completed', { promptId: 'generated-waiter-1', reason: 'failed' }),
+      record('prompt.completed', { promptId: 'p2', reason: 'failed' }),
+    ]);
+    expect(subsequentGateFailure.trailingRejectedPrompt).toBe(true);
+
+    const crashedContinuation = settleOrphanTurns(
+      fold([
+        turnPrompt(0, 'p1'),
+        userMessage('p1', 'work'),
+        turnEnded(0, 'cancelled'),
+        record('turn.prompt', {
+          turnId: 1,
+          promptId: undefined,
+          origin: { kind: 'injection', variant: 'turn_continue', ownerPromptId: 'p1' },
+          input: [],
+          trigger: 'continue',
+        }),
+        loop({ type: 'step.begin', uuid: 'step-c1', turnId: '1', step: 1 }),
+      ]),
+    );
+    applyConversationRecord(crashedContinuation, record('prompt.completed', { promptId: 'p2', reason: 'failed' }));
+    expect(crashedContinuation.trailingRejectedPrompt).toBe(true);
+
+    const cancelledContinuationThenGateFailure = fold([
+      turnPrompt(0, 'p1'),
+      userMessage('p1', 'work'),
+      turnEnded(0, 'cancelled'),
+      record('turn.prompt', {
+        turnId: 1,
+        promptId: undefined,
+        origin: { kind: 'injection', variant: 'turn_continue', ownerPromptId: 'p1' },
+        input: [],
+        trigger: 'continue',
+      }),
+      loop({ type: 'step.begin', uuid: 'step-c1', turnId: '1', step: 1 }),
+      turnEnded(1, 'cancelled'),
+      record('prompt.completed', { promptId: 'p2', reason: 'failed' }),
+    ]);
+    expect(cancelledContinuationThenGateFailure.trailingRejectedPrompt).toBe(true);
   });
 });

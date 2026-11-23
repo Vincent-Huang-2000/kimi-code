@@ -136,9 +136,12 @@ Use `/goal next <objective>` to line up follow-up work without interrupting the 
 
 The input box remains usable while the agent is thinking or calling tools, and supports the following extra actions:
 
+- **`Enter`**: queue the message; pick Steer under `/settings` → `Follow-up behavior` to inject it into the running turn instead
 - **`Ctrl-S`**: inject the content in the input box into the running turn immediately, without waiting for it to finish
 - **`Esc` / `Ctrl-C`**: interrupt the current turn
 - **`Ctrl-O`**: globally toggle the collapsed/expanded state of tool output and compaction summaries
+
+Queued messages stay in the queue through follow-up turns triggered by background-task notifications, and are sent in order only after the engine has drained all pending turns.
 
 When the agent is waiting for background tasks through `WaitFor`, sending a message with `Enter` steers it in and ends that wait early; messages already queued when the wait starts are steered in automatically as well. If the queue holds a shell command or a skill, automatic steering is skipped and the queue and new input stay queued until the turn ends. Press `Ctrl-S` to manually steer non-shell inputs from the editor and the queue. Background tasks keep running and existing tool results are preserved. If other foreground tools remain in the same batch, the agent processes your message after they return.
 

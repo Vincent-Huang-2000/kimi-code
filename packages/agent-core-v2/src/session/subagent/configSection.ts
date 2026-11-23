@@ -17,8 +17,8 @@ import {
   modelSupportsThinking,
   modelSupportsThinkingEffort,
   normalizeRequestedThinkingEffort,
-  type ThinkingConfig,
-} from '#/llm-adapter/model/thinking';
+} from '@moonshot-ai/core/llm/thinking';
+import type { ThinkingConfig } from '#/llm-adapter/model/thinking';
 
 export const SUBAGENT_SECTION = 'subagent';
 export const SECONDARY_MODEL_SECTION = 'secondaryModel';
@@ -126,11 +126,6 @@ export function resolveSubagentModelPool(config: IConfigService): SubagentModelP
   return undefined;
 }
 
-export function exposesSubagentModelChoice(config: IConfigService): boolean {
-  const pool = resolveSubagentModelPool(config);
-  return pool !== undefined && Object.keys(pool.models).length > 1;
-}
-
 export const SECONDARY_MODEL_DEFAULT_MODEL_REQUIRED_MESSAGE =
   '[secondary_model].default_model is required when [secondary_model.models] is configured';
 
@@ -186,7 +181,7 @@ function assertValidSubagentDefaultEffort(
   if (effort === undefined || pool === undefined) return;
   for (const alias of Object.keys(pool.models)) {
     const model = modelCatalog.get(alias);
-    if (effort === 'off' && model.alwaysThinking === true) {
+    if (effort === 'off' && model.spec.thinking?.alwaysThinking === true) {
       throw new Error2(
         ErrorCodes.CONFIG_INVALID,
         `[secondary_model].default_effort "off" cannot disable thinking for model "${alias}", which always reasons. Choose a concrete thinking effort instead of "off".`,
@@ -200,8 +195,8 @@ function assertValidSubagentDefaultEffort(
         },
       );
     }
-    if (modelSupportsThinkingEffort(effort, model, true)) continue;
-    if (!modelSupportsThinking(model)) {
+    if (modelSupportsThinkingEffort(effort, model.spec, true)) continue;
+    if (!modelSupportsThinking(model.spec)) {
       throw new Error2(
         ErrorCodes.CONFIG_INVALID,
         `[secondary_model].default_effort "${effort}" is set but model "${alias}" does not support thinking.`,
@@ -217,7 +212,7 @@ function assertValidSubagentDefaultEffort(
     }
     throw new Error2(
       ErrorCodes.CONFIG_INVALID,
-      `[secondary_model].default_effort "${effort}" is not supported by model "${alias}". Supported efforts: ${model.supportEfforts?.join(', ')}.`,
+      `[secondary_model].default_effort "${effort}" is not supported by model "${alias}". Supported efforts: ${model.spec.thinking?.supportEfforts?.join(', ')}.`,
       {
         details: {
           section: SECONDARY_MODEL_SECTION,
@@ -283,56 +278,7 @@ export function resolveSubagentThinking(
 ): string | undefined {
   if (explicit !== undefined) return explicit;
   if (config.get<ThinkingConfig>(THINKING_SECTION)?.enabled === false) return undefined;
-  return declaredDefaultEffortForModel(model);
-}
-
-export function buildSubagentModelDescriptions(config: IConfigService): string | undefined {
-  if (!exposesSubagentModelChoice(config)) return undefined;
-  return poolDescriptionLines(resolveSubagentModelPool(config)!).join('\n');
-}
-
-export function buildSubagentModelSummary(config: IConfigService): string | undefined {
-  if (!exposesSubagentModelChoice(config)) return undefined;
-  const pool = resolveSubagentModelPool(config)!;
-  const labels = orderedPoolAliases(pool).map((alias) =>
-    alias === pool.defaultModel ? `${alias} [default]` : alias,
-  );
-  return `Available models (pass via model): ${labels.join(', ')}.`;
-}
-
-function poolDescriptionLines(pool: SubagentModelPool): string[] {
-  const lines = ['Available models (pass via model):'];
-  for (const alias of orderedPoolAliases(pool)) {
-    const marker = alias === pool.defaultModel ? ' [default]' : '';
-    lines.push(formatPoolLine(`${alias}${marker}`, pool.models[alias]!));
-  }
-  return lines;
-}
-
-function orderedPoolAliases(pool: SubagentModelPool): string[] {
-  const aliases = Object.keys(pool.models);
-  const defaultModel = pool.defaultModel;
-  if (defaultModel === undefined || !Object.hasOwn(pool.models, defaultModel)) return aliases;
-  return [defaultModel, ...aliases.filter((alias) => alias !== defaultModel)];
-}
-
-function formatPoolLine(label: string, description: string): string {
-  return description === '' ? `- ${label}` : `- ${label}: ${description}`;
-}
-
-export function stripSubagentModelParameter(
-  parameters: Record<string, unknown>,
-): Record<string, unknown> {
-  const properties = parameters['properties'];
-  if (!isPlainObject(properties) || !('model' in properties)) return parameters;
-  const nextProperties = { ...properties };
-  delete nextProperties['model'];
-  const next: Record<string, unknown> = { ...parameters, properties: nextProperties };
-  const required = parameters['required'];
-  if (Array.isArray(required) && required.includes('model')) {
-    next['required'] = required.filter((entry) => entry !== 'model');
-  }
-  return next;
+  return declaredDefaultEffortForModel(model?.spec);
 }
 
 export function stripSubagentForkParameter(

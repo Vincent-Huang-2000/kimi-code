@@ -303,7 +303,7 @@ describe('AgentProfileService.bind', () => {
       hostEnvironmentServices(homeDir),
     );
     const svc = ctx.get(IAgentLoopService);
-    svc.remind({ message: { role: 'system', content: [{ type: 'text', text: 'before loop start' }] }, meta: {} });
+    svc.remind({ role: 'system', content: [{ type: 'text', text: 'before loop start' }] });
     svc.flushReminders();
     expect(svc.history()).toHaveLength(0);
     await svc.start();
@@ -319,7 +319,7 @@ describe('AgentProfileService.bind', () => {
         audio_in: false,
         thinking: true,
         tool_use: true,
-        max_context_tokens: 1_000_000,
+        maxContextSize: 1_000_000,
       },
     });
     await ctx.get(IWireService).flush();
@@ -596,7 +596,7 @@ describe('AgentProfileService.bind', () => {
         audio_in: false,
         thinking: true,
         tool_use: true,
-        max_context_tokens: 1_000_000,
+        maxContextSize: 1_000_000,
       },
     });
     const svc = ctx.get(IAgentLoopService);
@@ -1599,6 +1599,11 @@ describe('change-notifier belief seeding', () => {
         notifySkillChanges: async () => {},
         notifySubagentChanges: async () => {},
         notifyWorkspaceDirsChanges: async () => {},
+        notifyAllChanges: async () => {},
+        prepareForReload: () => ({
+          previousSubagentNames: [],
+          restoreAfterFailure: async () => {},
+        }),
         seedBeliefs,
         mute: () => {},
         unmute: () => {},

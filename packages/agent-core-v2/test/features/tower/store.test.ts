@@ -1514,7 +1514,7 @@ describe('merge gate', () => {
     });
 
     await expect(store.merge(mission.branch, { activeAgentIds: new Set() })).rejects.toThrow(
-      /waiting for explicit human acceptance/,
+      /waiting for artifact acceptance/,
     );
 
     await store.registerAgent(
@@ -1568,7 +1568,7 @@ describe('merge gate', () => {
     await writeFile(store.abs(review.file), raw.replace(/^mission:.*\r?\n/m, ''));
 
     await expect(store.merge(mission.branch, { activeAgentIds: new Set() })).rejects.toThrow(
-      /mission-matching explicit human acceptance/,
+      /mission-matching artifact acceptance/,
     );
 
     await store.submitReview('tower', {
@@ -1623,7 +1623,7 @@ describe('merge gate', () => {
 
     await commitFile(worktreeOf(mission), 'reports/extra.csv', 'name,value\na,1\n', 'add data');
     await expect(store.merge(mission.branch, { activeAgentIds: new Set() })).rejects.toThrow(
-      /fresh explicit human acceptance/,
+      /fresh artifact acceptance/,
     );
     await expect(cleanReview('tower', mission.branch)).rejects.toThrow(
       /advanced after the artifact acceptance-request/,
@@ -4801,7 +4801,7 @@ describe('state lock recovery and prepared writes', () => {
     }
   });
 
-  it('runs TowerComplete validation outside the state lock and stays idempotent under concurrency', async () => {
+  it('runs TowerComplete validation outside the state lock', async () => {
     const mission = await setupMission({
       title: 'feature x',
       scope: 'src/x/**',
@@ -4822,18 +4822,32 @@ describe('state lock recovery and prepared writes', () => {
       },
     );
     try {
-      const results = await Promise.all([
-        store.complete('w1', 'same completion report'),
-        store.complete('w1', 'same completion report'),
-      ]);
+      await store.complete('w1', 'same completion report');
       expect(observed.length).toBeGreaterThan(0);
       expect(observed).not.toContain(true);
-      expect(results.filter((result) => result.notificationCreated)).toHaveLength(1);
-      const messages = await store.readInbox('tower', 20);
-      expect(messages.filter((item) => item.action === 'complete')).toHaveLength(1);
     } finally {
       spy.mockRestore();
     }
+  });
+
+  it('keeps TowerComplete idempotent under concurrency', async () => {
+    const mission = await setupMission({
+      title: 'feature x',
+      scope: 'src/x/**',
+      file: 'src/x/x.ts',
+      content: 'x\n',
+      status: 'active',
+    });
+    await store.registerAgent(
+      rosterEntry({ name: 'w1', kind: 'worker', missionId: mission.id }),
+    );
+    const results = await Promise.all([
+      store.complete('w1', 'same completion report'),
+      store.complete('w1', 'same completion report'),
+    ]);
+    expect(results.filter((result) => result.notificationCreated)).toHaveLength(1);
+    const messages = await store.readInbox('tower', 20);
+    expect(messages.filter((item) => item.action === 'complete')).toHaveLength(1);
   });
 
   it('publishes a completion notification atomically while another complete prepares', async () => {

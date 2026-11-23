@@ -1,6 +1,7 @@
 import { Text, TuiAltScreen, TuiMainScreen } from '@moonshot-ai/pi-tui';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 
+import type { FollowUpBehavior, SubmitKey } from '#/tui/config';
 import { CTRL_C_HINT, DOUBLE_ESC_WINDOW_MS } from '#/tui/constant/kimi-tui';
 import {
   EditorKeyboardController,
@@ -40,6 +41,7 @@ function createHarness(
     setInputMode: vi.fn() as unknown as (...args: never[]) => unknown,
     getText: vi.fn(() => '') as unknown as (...args: never[]) => unknown,
     setText: vi.fn() as unknown as (...args: never[]) => unknown,
+    submitKey: 'enter' as unknown as (...args: never[]) => unknown,
   };
   const openUndoSelector = vi.fn();
   const cancelRunningShellCommand = vi.fn();
@@ -322,9 +324,6 @@ describe('EditorKeyboardController shell history recall', () => {
     const [filter] = setHistoryFilter.mock.calls[0] as [(entry: string) => boolean];
     const save = editor['onHistoryDraftSave'] as unknown as () => unknown;
 
-    // Enter browse from prompt mode, then simulate landing on a shell entry
-    // (which flips inputMode to bash). The filter should stay locked to prompt
-    // and keep allowing plain entries.
     (editor as unknown as { inputMode: string }).inputMode = 'prompt';
     save();
     (editor as unknown as { inputMode: string }).inputMode = 'bash';
@@ -401,7 +400,6 @@ describe('EditorKeyboardController input changes', () => {
     installExpandedText(editor, expanded);
     const onChange = editor['onChange'] as unknown as (text: string) => void;
 
-    // The visible text only holds the collapsed paste marker.
     onChange('/goal [paste #1 +4000 chars]');
 
     expect(host.updateGoalLengthWarning).toHaveBeenCalledWith(expanded);
@@ -425,7 +423,6 @@ describe('EditorKeyboardController input changes', () => {
     const getExpandedText = installExpandedText(editor, expanded);
     const onChange = editor['onChange'] as unknown as (text: string) => void;
 
-    // Visible text is `/go[paste #1 …]`; the paste completes the command.
     onChange('/go[paste #1 +3999 chars]');
 
     expect(getExpandedText).toHaveBeenCalled();
@@ -702,6 +699,45 @@ describe('EditorKeyboardController Ctrl-S steering', () => {
 
 });
 
+describe('EditorKeyboardController follow-up delivery', () => {
+  const submitWith = (
+    harness: Harness,
+    followUpBehavior: FollowUpBehavior | undefined,
+    submitKey: SubmitKey,
+  ): void => {
+    (harness.host.state.appState as { followUpBehavior?: FollowUpBehavior }).followUpBehavior = followUpBehavior;
+    (harness.editor as Record<string, unknown>)['submitKey'] = submitKey;
+    (harness.editor['onSubmit'] as unknown as (text: string) => void)('hello');
+  };
+
+  it.each([
+    [undefined, 'enter', 'default'],
+    [undefined, 'mod-enter', 'steer-draft'],
+    [undefined, 'ctrl-q', 'queue'],
+    ['queue', 'enter', 'default'],
+    ['queue', 'mod-enter', 'steer-draft'],
+    ['queue', 'ctrl-q', 'queue'],
+    ['steer', 'enter', 'steer-draft'],
+    ['steer', 'mod-enter', 'queue'],
+    ['steer', 'ctrl-q', 'queue'],
+  ] as const)('with follow_up_behavior %s, %s delivers %s', (followUpBehavior, submitKey, delivery) => {
+    const harness = createHarness({ streamingPhase: 'waiting' });
+
+    submitWith(harness, followUpBehavior, submitKey);
+
+    expect(harness.host.handleUserInput).toHaveBeenCalledExactlyOnceWith('hello', delivery);
+  });
+
+  it.each(['enter', 'mod-enter', 'ctrl-q'] as const)('lets the survey intercept a %s submit first', (submitKey) => {
+    const harness = createHarness({ streamingPhase: 'waiting' });
+    harness.survey.handleSubmit.mockReturnValueOnce(true);
+
+    submitWith(harness, 'steer', submitKey);
+
+    expect(harness.host.handleUserInput).not.toHaveBeenCalled();
+  });
+});
+
 describe('EditorKeyboardController survey wiring', () => {
   it('clears the pending undo-escape sequence only when the survey consumes Escape', () => {
     const { editor, openUndoSelector, survey } = createHarness();
@@ -770,7 +806,7 @@ describe('EditorKeyboardController survey wiring', () => {
     survey.handleSubmit.mockReturnValueOnce(false);
     onSubmit('hello');
 
-    expect(host.handleUserInput).toHaveBeenCalledWith('hello');
+    expect(host.handleUserInput).toHaveBeenCalledWith('hello', 'default');
   });
 
   it('displaces the survey when the external editor opens', () => {

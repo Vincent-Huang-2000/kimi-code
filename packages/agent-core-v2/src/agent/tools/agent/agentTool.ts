@@ -15,7 +15,7 @@ import { matchesGlobRuleSubject } from '#/tool/rule-match';
 import { IAgentToolExecutorService } from '#/agent/toolExecutor/toolExecutor';
 import { resolveAgentTaskConfig } from '#/agent/task/configSection';
 import { IModelCatalog } from '#/llm-adapter/model/catalog';
-import type { ModelCapability } from '#/llm-adapter/contract/capability';
+import type { ModelCapability } from '@moonshot-ai/core/llm/request';
 import {
   isToolActive as evaluateToolActive,
   resolveActiveToolNames,
@@ -31,6 +31,7 @@ import {
   ToolAccesses,
   isMcpToolName,
   type ExecutableToolContext,
+  type ExecutableToolErrorResult,
   type ExecutableToolResult,
   type ToolExecution,
 } from '#/tool/toolContract';
@@ -70,19 +71,17 @@ import {
 } from '#/session/subagent/spawn';
 import { SUBAGENT_FORK_FLAG_ID } from '#/session/subagent/flag';
 import {
-  buildSubagentModelDescriptions,
-  exposesSubagentModelChoice,
   formatSubagentTimeoutDescription,
   resolveSubagentModelPool,
   resolveSubagentTimeoutMs,
   stripSubagentForkParameter,
-  stripSubagentModelParameter,
   type SubagentModelSource,
 } from '#/session/subagent/configSection';
 import {
   BACKGROUND_AGENT_UNAVAILABLE,
   DEFAULT_PROFILE_NAME,
   ISubagentTool,
+  RESUME_WITH_MODEL_UNAVAILABLE,
   RESUME_WITH_TYPE_UNAVAILABLE,
   RESUMED_LABEL,
   SUBAGENT_STOPPED_MESSAGE,
@@ -90,7 +89,7 @@ import {
   USER_INTERRUPTED_SUBAGENT_MESSAGE,
   type SubagentToolInput,
 } from './agent';
-import type { TokenUsage } from '#human/llm-requester/usage';
+import type { TokenUsage } from '@moonshot-ai/core/llm/usage';
 
 export const PARTIAL_OUTPUT_NOTICE =
   '[partial output] The subagent did not finish this run. Below is the text it wrote before it ended; it is incomplete and unverified.';
@@ -119,7 +118,7 @@ import AGENT_DESCRIPTION_BASE from './agent.md?raw';
 import AGENT_FORK_DESCRIPTION from './agent-fork.md?raw';
 
 const SUBAGENT_TOOL_PARAMETERS = toInputJsonSchema(SubagentToolInputSchema);
-const SUBAGENT_TOOL_PARAMETERS_NO_MODEL = stripSubagentModelParameter(SUBAGENT_TOOL_PARAMETERS);
+const SUBAGENT_TOOL_PARAMETERS_NO_FORK = stripSubagentForkParameter(SUBAGENT_TOOL_PARAMETERS);
 const READ_MEDIA_FILE_TOOL_NAME = 'ReadMediaFile';
 const MCP_GLOB_MAGIC = /[*?[\]{}!@+()]/;
 
@@ -132,12 +131,9 @@ export class SubagentTool implements ISubagentTool {
   readonly name: string = 'Agent';
 
   get parameters(): Record<string, unknown> {
-    const parameters = exposesSubagentModelChoice(this.config)
-      ? SUBAGENT_TOOL_PARAMETERS
-      : SUBAGENT_TOOL_PARAMETERS_NO_MODEL;
     return this.flags.enabled(SUBAGENT_FORK_FLAG_ID)
-      ? parameters
-      : stripSubagentForkParameter(parameters);
+      ? SUBAGENT_TOOL_PARAMETERS
+      : SUBAGENT_TOOL_PARAMETERS_NO_FORK;
   }
 
   private readonly callerAgentId: string;
@@ -205,10 +201,6 @@ export class SubagentTool implements ISubagentTool {
     if (typeLines) {
       description += `\n\nAvailable agent types (pass via subagent_type):\n${typeLines}`;
     }
-    const modelLines = buildSubagentModelDescriptions(this.config);
-    if (modelLines !== undefined) {
-      description += `\n\n${modelLines}`;
-    }
     return description;
   }
 
@@ -245,7 +237,7 @@ export class SubagentTool implements ISubagentTool {
       }
     });
     if (refs.get(READ_MEDIA_FILE_TOOL_NAME)?.source !== 'user') {
-      if (this.anySubagentModelSupports((capabilities) => capabilities.image_in || capabilities.video_in)) {
+      if (this.anySubagentModelSupports((capabilities) => capabilities?.image_in === true || capabilities?.video_in === true)) {
         refs.set(READ_MEDIA_FILE_TOOL_NAME, { name: READ_MEDIA_FILE_TOOL_NAME, source: 'builtin' });
       } else {
         refs.delete(READ_MEDIA_FILE_TOOL_NAME);
@@ -254,7 +246,7 @@ export class SubagentTool implements ISubagentTool {
     if (
       !this.flags.enabled(TOOL_SELECT_FLAG_ID) ||
       !this.anySubagentModelSupports((capabilities) =>
-        capabilities.dynamically_loaded_tools === true && capabilities.tool_use,
+        capabilities?.dynamically_loaded_tools === true && capabilities.tool_use === true,
       )
     ) {
       refs.delete(SELECT_TOOLS_TOOL_NAME);
@@ -262,12 +254,14 @@ export class SubagentTool implements ISubagentTool {
     return [...refs.values()];
   }
 
-  private anySubagentModelSupports(supports: (capabilities: ModelCapability) => boolean): boolean {
+  private anySubagentModelSupports(
+    supports: (capabilities: ModelCapability | undefined) => boolean,
+  ): boolean {
     const pool = resolveSubagentModelPool(this.config);
     if (pool === undefined) return supports(this.loop.getModelCapabilities());
     for (const alias of Object.keys(pool.models)) {
       try {
-        const capabilities = this.modelCatalog.get(alias).capabilities;
+        const capabilities = this.modelCatalog.get(alias).spec.capability;
         if (supports(capabilities)) return true;
       } catch {
       }
@@ -275,18 +269,22 @@ export class SubagentTool implements ISubagentTool {
     return false;
   }
 
-  async resolveExecution(args: SubagentToolInput): Promise<ToolExecution> {
+  private parseSubagentInput(
+    args: SubagentToolInput,
+  ):
+    | ExecutableToolErrorResult
+    | {
+        readonly requestedProfileName: string | undefined;
+        readonly resumeAgentId: string | undefined;
+      } {
     const requestedProfileName = args.subagent_type?.length ? args.subagent_type : undefined;
-    const resumeAgentId = args.resume?.trim();
-
-    if (
-      resumeAgentId !== undefined &&
-      resumeAgentId.length > 0 &&
-      requestedProfileName !== undefined
-    ) {
+    const resumeAgentId = args.resume?.trim() || undefined;
+    if (resumeAgentId !== undefined && requestedProfileName !== undefined) {
       return { output: RESUME_WITH_TYPE_UNAVAILABLE, isError: true };
     }
-
+    if (resumeAgentId !== undefined && args.model !== undefined) {
+      return { output: RESUME_WITH_MODEL_UNAVAILABLE, isError: true };
+    }
     if (args.fork === true) {
       if (!this.flags.enabled(SUBAGENT_FORK_FLAG_ID)) {
         return { output: FORK_EXPERIMENTAL_UNAVAILABLE, isError: true };
@@ -296,14 +294,20 @@ export class SubagentTool implements ISubagentTool {
         return { output: forkError, isError: true };
       }
     }
+    return { requestedProfileName, resumeAgentId };
+  }
 
-    const profileNameForDisplay =
-      resumeAgentId !== undefined && resumeAgentId.length > 0
-        ? (await this.resumeProfileName(resumeAgentId)) ?? RESUMED_LABEL
-        : (requestedProfileName ??
-            (args.fork === true
-              ? (this.loop.data().profileName ?? DEFAULT_PROFILE_NAME)
-              : DEFAULT_PROFILE_NAME));
+  async resolveExecution(args: SubagentToolInput): Promise<ToolExecution> {
+    const parsed = this.parseSubagentInput(args);
+    if ('isError' in parsed) return parsed;
+    const { requestedProfileName, resumeAgentId } = parsed;
+
+    const profileNameForDisplay = resumeAgentId !== undefined
+      ? (await this.resumeProfileName(resumeAgentId)) ?? RESUMED_LABEL
+      : (requestedProfileName ??
+          (args.fork === true
+            ? (this.loop.data().profileName ?? DEFAULT_PROFILE_NAME)
+            : DEFAULT_PROFILE_NAME));
     const prefix = args.run_in_background === true ? 'Launching background' : 'Launching';
     let stop: ((context: {
       readonly reason: unknown;
@@ -484,23 +488,9 @@ export class SubagentTool implements ISubagentTool {
     try {
       signal.throwIfAborted();
       const runInBackground = args.run_in_background === true;
-      const requestedProfileName = args.subagent_type?.length ? args.subagent_type : undefined;
-      const resumeAgentId = args.resume?.trim();
-      const isResume = resumeAgentId !== undefined && resumeAgentId.length > 0;
-
-      if (isResume && requestedProfileName !== undefined) {
-        return { output: RESUME_WITH_TYPE_UNAVAILABLE, isError: true };
-      }
-
-      if (args.fork === true) {
-        if (!this.flags.enabled(SUBAGENT_FORK_FLAG_ID)) {
-          return { output: FORK_EXPERIMENTAL_UNAVAILABLE, isError: true };
-        }
-        const forkError = forkIncompatibility(args, this.loop.data());
-        if (forkError !== undefined) {
-          return { output: forkError, isError: true };
-        }
-      }
+      const parsed = this.parseSubagentInput(args);
+      if ('isError' in parsed) return parsed;
+      const { requestedProfileName, resumeAgentId } = parsed;
 
       const allowBackground = this.canRunInBackground();
       if (runInBackground && !allowBackground) {
@@ -521,9 +511,9 @@ export class SubagentTool implements ISubagentTool {
         this.log.warn('subagent launch failed', {
           toolCallId,
           runInBackground,
-          operation: isResume ? 'resume' : 'spawn',
+          operation: resumeAgentId !== undefined ? 'resume' : 'spawn',
           subagentType: requestedProfileName ?? DEFAULT_PROFILE_NAME,
-          resumeAgentId: isResume ? resumeAgentId : undefined,
+          resumeAgentId,
           error,
         });
         throw error;
@@ -593,20 +583,25 @@ export class SubagentTool implements ISubagentTool {
         detach?.(formatBackgroundAgentResult(taskId, handle, args.description, allowBackground, false));
       }
       let rejectDeadline: (error: Error) => void = () => {};
-      const deadline = new Promise<never>((_resolve, reject) => {
-        rejectDeadline = reject;
-      });
-      timeoutHandle = setTimeout(() => {
-        timedOut = true;
-        controller.abort('Timed out');
-        const graceMs = resolveAgentTaskConfig(this.config)?.killGracePeriodMs ?? 5_000;
-        forceHandle = setTimeout(() => {
-          writePartialOutput();
-          rejectDeadline(new Error('Timed out'));
-        }, graceMs);
-        forceHandle.unref?.();
-      }, timeoutMs);
-      timeoutHandle.unref?.();
+      const deadline =
+        timeoutMs > 0
+          ? new Promise<never>((_resolve, reject) => {
+              rejectDeadline = reject;
+            })
+          : undefined;
+      if (timeoutMs > 0) {
+        timeoutHandle = setTimeout(() => {
+          timedOut = true;
+          controller.abort('Timed out');
+          const graceMs = resolveAgentTaskConfig(this.config)?.killGracePeriodMs ?? 5_000;
+          forceHandle = setTimeout(() => {
+            writePartialOutput();
+            rejectDeadline(new Error('Timed out'));
+          }, graceMs);
+          forceHandle.unref?.();
+        }, timeoutMs);
+        timeoutHandle.unref?.();
+      }
       setStop(({ reason, abandon }) => {
         controller.abort(reason);
         const graceMs = resolveAgentTaskConfig(this.config)?.killGracePeriodMs ?? 5_000;
@@ -625,7 +620,10 @@ export class SubagentTool implements ISubagentTool {
       if (signal.aborted) requestAbort();
       else signal.addEventListener('abort', requestAbort, { once: true });
       try {
-        const outcome = await Promise.race([handle.completion, deadline]);
+        const outcome =
+          deadline === undefined
+            ? await handle.completion
+            : await Promise.race([handle.completion, deadline]);
         write?.(outcome.result);
         stopCode = outcome.stopReason;
         status = 'completed';

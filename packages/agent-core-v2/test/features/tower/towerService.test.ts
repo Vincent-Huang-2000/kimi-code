@@ -17,14 +17,13 @@ import { IAgentReminderService } from '#/features/reminder/reminderService';
 import { createReminderStub } from '../reminder/stubs';
 import type { ContextMessage } from '#/agent/contextMemory/types';
 import { IAgentLoopService } from '#/agent/loop/loop';
-import { IAgentPermissionModeService } from '#/agent/permissionMode/permissionMode';
 import { TurnStarted } from '#/agent/loop/turnEvents';
 import { TurnEnded } from '#/agent/loop/turnOps';
 import { PromptSubmitted } from '#/agent/prompt/promptEvents';
 import { isUserCancellation } from '#/_base/utils/abort';
 import { runWillBeginStepHooks, stubLoopWithHooks, type StubLoop } from '../../agent/loop/stubs';
 import { IAgentToolPolicyService } from '#/agent/toolPolicy/toolPolicy';
-import { IAgentScopeContext } from '#/agent/scopeContext/scopeContext';
+import { IAgentScopeContext, makeAgentScopeContext } from '#/agent/scopeContext/scopeContext';
 import { IAgentToolApprovalService } from '#/agent/toolApproval/toolApproval';
 import { IAgentToolExecutorService } from '#/agent/toolExecutor/toolExecutor';
 import type {
@@ -32,7 +31,6 @@ import type {
   ResolvedToolExecutionHookContext,
 } from '#/agent/toolExecutor/toolHooks';
 import { STATE_FILE, TowerStore, type TowerState } from '#/features/tower/protocol/index';
-import { IBootstrapService } from '#/app/bootstrap/bootstrap';
 import { TowerSendTool } from '#/features/tower/tools/send/sendTool';
 import { TowerReviewTool } from '#/features/tower/tools/review/reviewTool';
 import { TowerCompleteTool } from '#/features/tower/tools/complete/completeTool';
@@ -50,7 +48,6 @@ import { IAgentTaskService } from '#/agent/task/task';
 import { SubagentStarted } from '#/session/subagent/mirrorAgentRun';
 import { IAgentStateService } from '#/agent/state/agentState';
 import { AgentStatusUpdated } from '#/agent/usage/usageEvents';
-import { makeAgentScopeContext } from '#/agent/scopeContext/scopeContext';
 import { IEventBus, ISessionEventBus } from '#/app/event/eventBus';
 import { EventBusService } from '#/app/event/eventBusService';
 import { IBashParserService } from '#/app/bashParser/bashParser';
@@ -2968,14 +2965,6 @@ describe('AgentTowerService', () => {
                 }
               : undefined,
         } as unknown as IAgentLifecycleService,
-        {
-          _serviceBrand: undefined,
-          mode: 'manual',
-        } as unknown as IAgentPermissionModeService,
-        {
-          _serviceBrand: undefined,
-          args: { requestHeaders: {}, nonInteractive: false },
-        } as unknown as IBootstrapService,
       );
 
       const result = await executeTool(tool, {
@@ -3530,7 +3519,7 @@ describe('AgentTowerService', () => {
       expect(loop.snapshot().hasPendingRequests).toBe(false);
     });
 
-    function publishUserPrompt(promptId: string): void {
+    function publishPrompt(promptId: string, origin: PromptSubmitted['origin']): void {
       publishAsMain(
         ix,
         new PromptSubmitted({
@@ -3539,33 +3528,53 @@ describe('AgentTowerService', () => {
           userMessageId: promptId,
           status: 'queued',
           content: [{ type: 'text', text: 'hold on' }],
+          origin,
           createdAt: new Date().toISOString(),
         }),
       );
     }
 
-    it('cancels the inbox wake turn when a user prompt is submitted', async () => {
+    it('cancels the inbox wake turn for user-initiated prompts', async () => {
       const tower = ix.get(IAgentTowerService);
       await tower.enter();
 
-      const wakeTurn = loop.startTurn();
-      publishAsMain(
-        ix,
-        new TurnStarted({
-          agentId: 'main',
-          turnId: wakeTurn.id,
-          origin: { kind: 'injection', variant: TOWER_INBOX_WAKE_VARIANT },
-        }),
-      );
-      publishUserPrompt('p1');
-      await flushWake();
+      const origins = [
+        { kind: 'user' },
+        {
+          kind: 'skill_activation',
+          activationId: 'skill-1',
+          skillName: 'example-skill',
+          trigger: 'user-slash',
+        },
+        {
+          kind: 'plugin_command',
+          activationId: 'plugin-1',
+          pluginId: 'example-plugin',
+          commandName: 'example-command',
+          trigger: 'user-slash',
+        },
+      ] as const;
+      const wakeTurnIds: number[] = [];
+      for (const [index, origin] of origins.entries()) {
+        const wakeTurn = loop.startTurn();
+        wakeTurnIds.push(wakeTurn.id);
+        publishAsMain(
+          ix,
+          new TurnStarted({
+            agentId: 'main',
+            turnId: wakeTurn.id,
+            origin: { kind: 'injection', variant: TOWER_INBOX_WAKE_VARIANT },
+          }),
+        );
+        publishPrompt(`p${String(index + 1)}`, origin);
+        await flushWake();
+      }
 
-      expect(loop.cancels).toHaveLength(1);
-      expect(loop.cancels[0]?.turnId).toBe(wakeTurn.id);
-      expect(isUserCancellation(loop.cancels[0]?.reason)).toBe(true);
+      expect(loop.cancels.map((cancel) => cancel.turnId)).toEqual(wakeTurnIds);
+      for (const cancel of loop.cancels) expect(isUserCancellation(cancel.reason)).toBe(true);
     });
 
-    it('ignores turns seeded by other notification origins', async () => {
+    it('ignores non-user submissions and turns seeded by other notification origins', async () => {
       const tower = ix.get(IAgentTowerService);
       await tower.enter();
 
@@ -3578,7 +3587,31 @@ describe('AgentTowerService', () => {
           origin: { kind: 'injection', variant: 'cron' },
         }),
       );
-      publishUserPrompt('p1');
+      publishPrompt('p1', { kind: 'user' });
+      await flushWake();
+
+      const wakeTurn = loop.startTurn();
+      publishAsMain(
+        ix,
+        new TurnStarted({
+          agentId: 'main',
+          turnId: wakeTurn.id,
+          origin: { kind: 'injection', variant: TOWER_INBOX_WAKE_VARIANT },
+        }),
+      );
+      publishPrompt('p2', {
+        kind: 'task',
+        taskId: 'task-1',
+        status: 'completed',
+        notificationId: 'task:task-1:completed',
+      });
+      publishPrompt('p3', { kind: 'injection', variant: 'cron' });
+      publishPrompt('p4', {
+        kind: 'skill_activation',
+        activationId: 'skill-model',
+        skillName: 'example-skill',
+        trigger: 'model-tool',
+      });
       await flushWake();
 
       expect(loop.cancels).toEqual([]);
@@ -3598,7 +3631,7 @@ describe('AgentTowerService', () => {
         }),
       );
       publishAsMain(ix, new TurnEnded({ agentId: 'main', turnId: wakeTurn.id, reason: 'completed' }));
-      publishUserPrompt('p1');
+      publishPrompt('p1', { kind: 'user' });
       await flushWake();
 
       expect(loop.cancels).toEqual([]);
@@ -4241,13 +4274,14 @@ describe('TowerModeInjection', () => {
     expect(text).toContain('with `TowerInbox` only when it is needed');
     expect(text).toContain('structured reason and recovery details');
     expect(text).toContain('per reviewer');
-    expect(text).toContain('Normal merge-bound build reviews require this independent path');
-    expect(text).toContain('Surveys do not need review');
-    expect(text).toContain('kind: "artifact"');
+    expect(text).toContain('independent reviewer');
+    expect(text).toContain('Surveys close with `TowerMerge`');
+    expect(text).toContain('tower-recorded acceptance');
     expect(text).toContain('acceptance-request');
-    expect(text).toContain('explicit user approval');
-    expect(text).toContain('auto or noninteractive mode');
-    expect(text).toContain('never self-approve or substitute an independent review');
+    expect(text).toContain('When the user has asked for the merge or approved the presented artifacts');
+    expect(text).toContain('ask for it in interactive mode');
+    expect(text).toContain('in a noninteractive run leave the mission completed and waiting instead of merging');
+    expect(text).toContain('never substitute an independent review');
     expect(text).toContain('merged or abandoned');
     expect(text).toContain('background execution is unavailable');
     expect(text).toContain('break-glass');

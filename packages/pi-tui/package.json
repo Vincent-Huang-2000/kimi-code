@@ -1,6 +1,6 @@
 {
 	"name": "@moonshot-ai/pi-tui",
-	"version": "0.86.0",
+	"version": "0.87.0",
 	"private": true,
 	"description": "Terminal User Interface library with differential rendering for efficient text-based applications",
 	"license": "MIT",
@@ -36,6 +36,10 @@
 		".": {
 			"types": "./src/index.ts",
 			"default": "./src/index.ts"
+		},
+		"./testing": {
+			"types": "./test/virtual-terminal.ts",
+			"default": "./test/virtual-terminal.ts"
 		},
 		"./package.json": "./package.json"
 	},

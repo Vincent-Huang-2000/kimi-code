@@ -28,13 +28,23 @@ export {
   testAgent,
   wireRecordPersistenceServices,
   type TestAgentContext,
+  type TestAgentInput,
   type TestAgentOptions,
+  type TestModelEndpoint,
   type TestAgentServiceGroup,
   type TestAgentServiceOverride,
   type TestAgentServiceRegistration,
   type WireRecordPersistence,
 } from './agent';
-export { createScriptedGenerate, requesterFromGenerateFn, type LegacyGenerateFn, type LegacyGenerateResult } from './scripted-generate';
+export {
+  createScriptedGenerate,
+  createMockProvider,
+  createMockProviderRequester,
+  fetchBackedProvider,
+  providerHttpError,
+  type MockProviderHandler,
+  type MockProviderResponse,
+} from './scripted-generate';
 export {
   DEFAULT_TEST_SYSTEM_PROMPT,
   eventSnapshot,
@@ -51,3 +61,4 @@ export {
   type RpcSnapshotEntry,
   type WireSnapshotEntry,
 } from './snapshots';
+export { testkitAgentFixtures, type TestkitAgentFixtureDefinitions, type TestkitAgentFixtures } from './testkit';

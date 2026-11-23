@@ -1,10 +1,10 @@
-/* oxlint-disable typescript-eslint/no-unsafe-declaration-merging, eslint-plugin-import/namespace -- Event2 class+payload-interface declaration merging is the sanctioned event-declaration idiom. */
+/* oxlint-disable typescript-eslint/no-unsafe-declaration-merging -- Event2 class+payload-interface declaration merging is the sanctioned event-declaration idiom. */
 import { createHash } from 'node:crypto';
 import { z } from 'zod';
 
 import { AgentEvent2 } from '#/app/event/event2';
-import type { ThinkingEffort } from '#human/llm-requester/thinking';
-import type { ToolDescription } from '#human/llm/message';
+import type { ThinkingEffort } from '@moonshot-ai/core/llm/request';
+import type { ToolDescription } from '@moonshot-ai/core/llm/message';
 import { defineState } from '#/state/state';
 
 export interface LlmRequestToolSchema {

@@ -3,6 +3,7 @@ import { afterEach, describe, expect, it, vi } from 'vitest';
 import { IAgentTaskService, type AgentTaskInfo } from '#/agent/task/task';
 import { renderNotificationXml } from '#/agent/task/notificationXml';
 import { AgentTaskPersistence } from '#/agent/task/persist';
+import { restoreTaskCompletions } from '#/agent/task/completionRestore';
 import { agentTaskInfo, type AgentTaskFields } from '#/agent/task/handler';
 import {
   AgentTaskRequestService,
@@ -11,6 +12,7 @@ import {
 } from '#/agent/task/taskService';
 import type { AgentToolExecutionHandler } from '#/agent/toolExecutor/toolExecutor';
 import type { ToolExecutionStatus } from '#/tool/executor';
+import type { IWireService } from '#/wire/wire';
 import { InMemoryStorageService } from '#/persistence/backends/memory/inMemoryStorageService';
 import {
   createTaskChannel,
@@ -148,7 +150,7 @@ describe('AgentTaskService', () => {
     const info = await channel.service.wait(task.handler.taskId);
     if (info === undefined) throw new Error('missing task info');
     const completion = await channel.outputs.createCompletion(info, task.handler.snapshot().id);
-    expect(completion.meta?.origin).toMatchObject({ kind: 'task', taskId: task.handler.taskId });
+    expect(completion.attributes?.origin).toMatchObject({ kind: 'task', taskId: task.handler.taskId });
   });
 
   it('cancels only the wait signal without stopping or suppressing the task', async () => {
@@ -176,7 +178,7 @@ describe('AgentTaskService', () => {
     const completions = await Promise.all(infos.map((info, index) =>
       channel.outputs.createCompletion(info!, index === 0 ? first.handler.snapshot().id : second.handler.snapshot().id)
     ));
-    expect(completions.map((entry) => entry.meta?.origin)).toEqual([
+    expect(completions.map((entry) => entry.attributes?.origin)).toEqual([
       expect.objectContaining({ taskId: first.handler.taskId }),
       expect.objectContaining({ taskId: second.handler.taskId }),
     ]);
@@ -392,6 +394,35 @@ describe('AgentTaskService', () => {
     const service = new AgentTaskService('main');
     service.restore(taskHistoryRecords([processInfo()]));
     expect(service.get('bash-abcdef01')).toMatchObject({ status: 'lost', endedAt: null });
+  });
+
+  it('restores a lost task completion once and deduplicates pending delivery', async () => {
+    const channel = createTaskChannel();
+    const journal = taskHistoryRecords([processInfo()]);
+    const wire = {
+      readRestoreChains: async () => ({ journal, restorable: journal }),
+    } as unknown as IWireService;
+    const first = await restoreTaskCompletions({
+      wire,
+      agentId: 'main',
+      taskOutputs: channel.outputs,
+      messages: [],
+    });
+
+    expect(first).toHaveLength(1);
+    expect(first[0]?.attributes?.origin).toMatchObject({
+      kind: 'task',
+      taskId: 'bash-abcdef01',
+      status: 'lost',
+      notificationId: 'task:bash-abcdef01:lost',
+    });
+    await expect(restoreTaskCompletions({
+      wire,
+      agentId: 'main',
+      taskOutputs: channel.outputs,
+      messages: [],
+      pending: first,
+    })).resolves.toEqual([]);
   });
 
   it('rejects projection for a handler without task fields', () => {
